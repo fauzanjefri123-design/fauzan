@@ -1,0 +1,144 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "A product for sale in the marketplace",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "name": { "type": "string" },
+        "price": { "type": "number" },
+        "stock": { "type": "number" },
+        "category": { "type": "string" },
+        "discount": { "type": "number" },
+        "description": { "type": "string" },
+        "barcode": { "type": "string" },
+        "supplier": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "images": { "type": "array" },
+        "video": { "type": "string" },
+        "variants": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "name", "price", "stock", "createdAt"]
+    },
+    "Activity": {
+      "title": "Activity",
+      "description": "A real-time user operation log",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "action": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "action", "createdAt"]
+    },
+    "Sale": {
+      "title": "Sale",
+      "description": "A sales transaction",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "productId": { "type": "string" },
+        "productName": { "type": "string" },
+        "quantity": { "type": "number" },
+        "total": { "type": "number" },
+        "date": { "type": "string", "format": "date-time" },
+        "cashier": { "type": "string" }
+      },
+      "required": ["ownerId", "productId", "total", "date"]
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "An expenditure record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "category": { "type": "string" },
+        "amount": { "type": "number" },
+        "date": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "category", "amount", "date", "createdAt"]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "A customer profile record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "address": { "type": "string" },
+        "points": { "type": "number" },
+        "memberLevel": { "type": "string" },
+        "totalSpent": { "type": "number" },
+        "cashbackBalance": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "name", "createdAt"]
+    },
+    "Wallet": {
+      "title": "Wallet",
+      "description": "User balance and historical transactions",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "balance": { "type": "number" },
+        "transactions": { "type": "array" }
+      },
+      "required": ["userId", "balance", "transactions"]
+    },
+    "LoginLog": {
+      "title": "LoginLog",
+      "description": "Security logs capturing authentication access",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "device": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "ip": { "type": "string" },
+        "status": { "type": "string" }
+      },
+      "required": ["userId", "device", "timestamp", "ip", "status"]
+    }
+  },
+  "firestore": {
+    "/products/{productId}": {
+      "schema": { "$ref": "Product" },
+      "description": "Products managed by the owner"
+    },
+    "/activities/{activityId}": {
+      "schema": { "$ref": "Activity" },
+      "description": "Real-time user logs"
+    },
+    "/sales/{saleId}": {
+      "schema": { "$ref": "Sale" },
+      "description": "Sales transactions"
+    },
+    "/expenses/{expenseId}": {
+      "schema": { "$ref": "Expense" },
+      "description": "Expenditure logs"
+    },
+    "/customers/{customerId}": {
+      "schema": { "$ref": "Customer" },
+      "description": "Customer listings"
+    },
+    "/wallets/{userId}": {
+      "schema": { "$ref": "Wallet" },
+      "description": "User digital wallet"
+    },
+    "/loginLogs/{logId}": {
+      "schema": { "$ref": "LoginLog" },
+      "description": "Authentication audit trail list"
+    }
+  }
+}

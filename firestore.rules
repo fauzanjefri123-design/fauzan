@@ -1,0 +1,120 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global Safety Net default catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Primitive Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isOwner(ownerId) {
+      return isSignedIn() && request.auth.uid == ownerId;
+    }
+
+    function validateString(val) {
+      return val is string && val.size() > 0 && val.size() <= 1000;
+    }
+
+    function validatePositiveNumber(val) {
+      return (val is number || val is int) && val > 0;
+    }
+
+    function validateNonNegativeNumber(val) {
+      return (val is number || val is int) && val >= 0;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // 1. USERS: Only users can read & write their own account
+    match /users/{userId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    // 2. PRODUCTS: Validate: name string, price > 0, stock >= 0, ownerId required
+    match /products/{productId} {
+      allow read: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isSignedIn() && 
+                    isOwner(request.resource.data.ownerId) &&
+                    validateString(request.resource.data.name) &&
+                    validatePositiveNumber(request.resource.data.price) &&
+                    validateNonNegativeNumber(request.resource.data.stock);
+      allow update: if isSignedIn() && 
+                    isOwner(resource.data.ownerId) &&
+                    isOwner(request.resource.data.ownerId) &&
+                    validateString(request.resource.data.name) &&
+                    validatePositiveNumber(request.resource.data.price) &&
+                    validateNonNegativeNumber(request.resource.data.stock);
+      allow delete: if isSignedIn() && isOwner(resource.data.ownerId);
+    }
+
+    // 3. ACTIVITIES: Read by owner, write-only/create-only, write once, NO edit/delete
+    match /activities/{activityId} {
+      allow read: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isSignedIn() && isOwner(request.resource.data.ownerId);
+      allow update, delete: if false; 
+    }
+
+    // 4. SALES: Total > 0, quantity >= 1, ownerId required
+    match /sales/{saleId} {
+      allow read: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isSignedIn() && 
+                    isOwner(request.resource.data.ownerId) &&
+                    validatePositiveNumber(request.resource.data.total) &&
+                    validatePositiveNumber(request.resource.data.quantity);
+      allow update, delete: if isSignedIn() && isOwner(resource.data.ownerId);
+    }
+
+    // 5. EXPENSES: Amount > 0, category required string
+    match /expenses/{expenseId} {
+      allow read: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isSignedIn() && 
+                    isOwner(request.resource.data.ownerId) &&
+                    validatePositiveNumber(request.resource.data.amount) &&
+                    validateString(request.resource.data.category);
+      allow update: if isSignedIn() && 
+                    isOwner(resource.data.ownerId) &&
+                    isOwner(request.resource.data.ownerId) &&
+                    validatePositiveNumber(request.resource.data.amount) &&
+                    validateString(request.resource.data.category);
+      allow delete: if isSignedIn() && isOwner(resource.data.ownerId);
+    }
+
+    // 6. CUSTOMERS: Name string, phone optional string
+    match /customers/{customerId} {
+      allow read: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isSignedIn() && 
+                    isOwner(request.resource.data.ownerId) &&
+                    validateString(request.resource.data.name) &&
+                    (request.resource.data.phone == null || request.resource.data.phone is string);
+      allow update: if isSignedIn() && 
+                    isOwner(resource.data.ownerId) &&
+                    isOwner(request.resource.data.ownerId) &&
+                    validateString(request.resource.data.name) &&
+                    (request.resource.data.phone == null || request.resource.data.phone is string);
+      allow delete: if isSignedIn() && isOwner(resource.data.ownerId);
+    }
+
+    // 7. WALLETS (Singular/Plural paths to support full compatibility)
+    match /wallets/{userId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+    match /wallet/{userId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    // 8. LOGIN LOGS: Logged when users authentication events trigger
+    match /loginLogs/{logId} {
+      allow read, create, delete: if isSignedIn() && 
+                    (resource == null || resource.data.userId == request.auth.uid) &&
+                    (request.resource == null || request.resource.data.userId == request.auth.uid);
+      allow update: if false;
+    }
+  }
+}
