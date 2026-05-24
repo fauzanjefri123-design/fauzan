@@ -10,6 +10,8 @@ import { translations } from '../lib/translations';
 import { useAuth } from '../context/AuthContext';
 import { getLoginLogs, addLoginLog } from '../lib/firestoreService';
 import { toast } from 'react-hot-toast';
+import { signOut } from 'firebase/auth';
+import { auth } from '../lib/firebase';
 
 interface LoginLogDoc {
   id: string;
@@ -22,7 +24,7 @@ interface LoginLogDoc {
 
 export default function SecurityCenter() {
   const { language } = useThemeLanguage();
-  const { userData, logout } = useAuth();
+  const { userData } = useAuth();
   const ownerId = userData?.ownerId || '';
   const t = (key: keyof typeof translations.id) => translations[language]?.[key] || key;
 
@@ -126,7 +128,7 @@ export default function SecurityCenter() {
       : 'Are you sure you want to sign out this active session?')) {
       playClickSound();
       try {
-        await logout();
+        await signOut(auth);
         toast.success('Berhasil logout dari perangkat!');
       } catch (err) {
         toast.error('Gagal keluar sesi.');

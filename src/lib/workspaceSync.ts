@@ -203,3 +203,69 @@ export async function triggerRealtimeSaleChatAlert(
     console.warn('Silent failure on Google Chat automatic checkout log:', err.message);
   }
 }
+
+/**
+ * 4. Google Docs Integration - Create official business report document
+ */
+export async function createGoogleDocReport(
+  token: string,
+  title: string,
+  contentStr: string
+): Promise<any> {
+  if (!token) throw new Error('Authentication token missing.');
+
+  try {
+    // 1. Create a dynamic new Google Doc with the specified title
+    const createResponse = await fetch('https://docs.googleapis.com/v1/documents', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        title: title || `InMarket Report - ${new Date().toLocaleDateString()}`,
+      }),
+    });
+
+    if (!createResponse.ok) {
+        const errText = await createResponse.text();
+        throw new Error(`Google Docs Create failure: ${createResponse.status} - ${errText}`);
+    }
+
+    const doc = await createResponse.json();
+    const documentId = doc.documentId;
+
+    // 2. Insert content into the document using batchUpdate
+    // We insert a header, timestamp, and then the dynamic report content
+    const updateResponse = await fetch(`https://docs.googleapis.com/v1/documents/${documentId}:batchUpdate`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        requests: [
+          {
+            insertText: {
+              location: { index: 1 },
+              text: `INMARKET BUSINESS REPORT: ${title}\nGenerated on: ${new Date().toLocaleString()}\n\n------------------------------------------------\n\n${contentStr}\n\n------------------------------------------------\n(End of Automated Report)\n`
+            }
+          }
+        ]
+      }),
+    });
+
+    if (!updateResponse.ok) {
+        const errText = await updateResponse.text();
+        throw new Error(`Google Docs Update failure: ${updateResponse.status} - ${errText}`);
+    }
+
+    return {
+      documentId,
+      url: `https://docs.google.com/document/d/${documentId}/edit`
+    };
+  } catch (error: any) {
+    console.error('Google Docs Export Error:', error);
+    throw error;
+  }
+}

@@ -1,12 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { auth } from '../lib/firebase';
-import { createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile } from 'firebase/auth';
+import { 
+  createUserWithEmailAndPassword, 
+  signInWithEmailAndPassword, 
+  updateProfile,
+  onAuthStateChanged,
+  GoogleAuthProvider,
+  signInWithPopup
+} from 'firebase/auth';
 import { doc, setDoc, getDoc } from 'firebase/firestore';                // Added
 import { db } from '../lib/firebase';                               // Added
 import { cn, safeJsonParse } from '../lib/utils';
 import { createSignedOfflineSession } from '../lib/validation';
 import { logActivity, seedInitialUserActivities } from '../lib/activities';
+import { setWorkspaceToken, setWorkspaceUserEmail } from '../lib/workspaceSync';
 import { 
   Loader2, 
   AlertCircle, 
@@ -85,6 +93,73 @@ export default function Auth({ onNavigate }: { onNavigate: (view: any) => void }
     }, 800);
   };
 
+  const handleGoogleSignIn = async () => {
+    setError(null);
+    setIsLoading(true);
+    playScanSound();
+    
+    try {
+      const provider = new GoogleAuthProvider();
+      // Add required Workspace scopes for reporting functionality
+      provider.addScope('https://www.googleapis.com/auth/docs');
+      
+      const result = await signInWithPopup(auth, provider);
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      const token = credential?.accessToken;
+      
+      if (token) {
+        setWorkspaceToken(token);
+        setWorkspaceUserEmail(result.user.email);
+        
+        // Handle role and business induction for the synced user
+        const userDoc = await getDoc(doc(db, 'users', result.user.uid));
+        let dbRole = 'Owner';
+        let businessId = 'bus_' + result.user.uid;
+        let ownerId = result.user.uid;
+        
+        if (userDoc.exists()) {
+          const data = userDoc.data();
+          dbRole = data.role === 'owner' ? 'Owner' : 'Employee';
+          businessId = data.businessId || businessId;
+          ownerId = data.ownerId || ownerId;
+        } else {
+          // If first time Google Login, default this account to Owner for simple onboarding
+          await setDoc(doc(db, 'users', result.user.uid), {
+            email: result.user.email,
+            role: 'owner',
+            ownerId: result.user.uid,
+            businessId: 'bus_' + result.user.uid,
+            createdAt: new Date()
+          });
+        }
+        
+        localStorage.setItem('inmarket_user_role', dbRole);
+        localStorage.setItem('offline_logged_in_user', JSON.stringify(createSignedOfflineSession({
+          uid: result.user.uid,
+          email: result.user.email || '',
+          displayName: result.user.displayName || result.user.email?.split('@')[0] || 'User',
+          role: dbRole,
+          businessId: businessId,
+          ownerId: ownerId
+        })));
+
+        setSuccess(language === 'id' ? 'Otorisasi Google Berhasil!' : 'Google Authorization Successful!');
+        setIsScanning(true);
+        playSuccessSound();
+
+        setTimeout(() => {
+          setIsScanning(false);
+          onNavigate('dashboard');
+        }, 1500);
+      }
+    } catch (e: any) {
+      console.error("Google Sign-in failed:", e);
+      setError(getErrorMessage(e.code, e.message));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   // Advanced Registration and Auth Recovery states
   const [username, setUsername] = useState('');
   const [phone, setPhone] = useState('');
@@ -150,6 +225,11 @@ export default function Auth({ onNavigate }: { onNavigate: (view: any) => void }
     const code = errCode?.toLowerCase() || '';
     const msg = message?.toLowerCase() || '';
     
+    if (code.includes('popup-closed-by-user') || msg.includes('popup-closed-by-user')) {
+      return language === 'id' 
+        ? 'Otorisasi dibatalkan (pop-up ditutup sebelum selesai).' 
+        : 'Authorization cancelled (popup closed before completion).';
+    }
     if (code.includes('network-request-failed') || msg.includes('network-request-failed') || msg.includes('network')) {
       return language === 'id' 
         ? '⚠️ Gagal terhubung ke Firebase Server (Sebab: Sandbox / Port diblokir). Silakan aktifkan Akses Sandbox Offline!' 
@@ -303,70 +383,71 @@ export default function Auth({ onNavigate }: { onNavigate: (view: any) => void }
     try {
       if (isLogin) {
         try {
-          // Attempt default Firebase authentication
-          await signInWithEmailAndPassword(auth, email, password);
-          
-          if (auth.currentUser) {
-            // Retrieve dynamic configuration from database
-            const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
-            let dbRole = 'Owner';
-            let businessId = 'bus_' + auth.currentUser.uid;
-            let ownerId = auth.currentUser.uid;
-            
-            if (userDoc.exists()) {
-              const data = userDoc.data();
-              dbRole = data.role === 'owner' ? 'Owner' : (data.role === 'employee' ? 'Employee' : 'Guest');
-              businessId = data.businessId || businessId;
-              ownerId = data.ownerId || ownerId;
+          // Attempt strict backend authentication with role validation
+          const response = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password, role }),
+          });
+
+          const data = await response.json();
+
+          if (!response.ok) {
+            // Check for specific role error message requested by user
+            if (response.status === 403 && data.error) {
+              setError(data.error);
+              throw new Error(data.error);
             }
-            
-            // Critical fix: ensure local cache matches the database role exactly
-            localStorage.setItem('inmarket_user_role', dbRole);
-            localStorage.setItem('offline_logged_in_user', JSON.stringify(createSignedOfflineSession({
-              uid: auth.currentUser.uid,
-              email: email,
-              displayName: auth.currentUser.displayName || email.split('@')[0],
-              role: dbRole,
-              businessId: businessId,
-              ownerId: ownerId
-            })));
-
-            // Seed activities + Log activity
-            seedInitialUserActivities(email, auth.currentUser.displayName || email.split('@')[0]);
-            logActivity('Pengguna berhasil masuk (login) ke platform InMarket.id', {
-              userId: email,
-              businessId: businessId,
-              role: dbRole,
-              username: auth.currentUser.displayName || email.split('@')[0]
-            });
-
-            setSuccess(language === 'id' ? 'Otorisasi Berhasil. Memindai data diri...' : 'Authorization Successful. Scanning profile...');
-            setIsScanning(true);
-            playSuccessSound();
-
-            setTimeout(() => {
-              setIsScanning(false);
-              onNavigate('dashboard');
-            }, 1500);
+            throw new Error(data.error || 'Login failed');
           }
 
-        } catch (firebaseErr: any) {
-          const errCode = firebaseErr?.code || '';
-          const errMsg = firebaseErr?.message || '';
-          const isNetworkErr = errCode.includes('network') || errMsg.includes('network-request-failed') || errMsg.includes('auth/network-request-failed') || errMsg.includes('apiKey');
+          const { token, user } = data;
           
-          if (!isNetworkErr) {
-            console.warn("Firebase Auth credentials invalid or rejected:", errCode || errMsg);
-          } else {
-            console.error("Firebase network connection failed:", firebaseErr);
-            setIsNetworkError(true);
-          }
+          // Store session data
+          localStorage.setItem('inmarket_user_role', user.role);
+          localStorage.setItem('offline_logged_in_user', JSON.stringify(createSignedOfflineSession({
+            uid: user.uid,
+            email: user.email,
+            displayName: user.displayName || user.email.split('@')[0],
+            role: user.role,
+            businessId: user.businessId,
+            ownerId: user.uid
+          })));
+
+          // Seed activities + Log activity
+          seedInitialUserActivities(user.email, user.displayName || user.email.split('@')[0]);
+          logActivity('Pengguna berhasil masuk (login) ke platform InMarket.id', {
+            userId: user.email,
+            businessId: user.businessId,
+            role: user.role,
+            username: user.displayName || user.email.split('@')[0]
+          });
+
+          setSuccess(language === 'id' ? 'Otorisasi Berhasil. Memindai data diri...' : 'Authorization Successful. Scanning profile...');
+          setIsScanning(true);
+          playSuccessSound();
+
+          setTimeout(() => {
+            setIsScanning(false);
+            onNavigate('dashboard');
+          }, 1500);
+
+        } catch (authErr: any) {
+          console.warn("Auth Error:", authErr.message);
           
-          // Test local offline vault matching
+          // Fallback to local offline vault if network is down or specific config allows
           const cachedUserStr = localStorage.getItem('local_user_' + email);
           const cachedUser = safeJsonParse(cachedUserStr, null);
           
           if (cachedUser && cachedUser.password === password) {
+            // Even in offline, we enforce role check if it was cached
+            if (cachedUser.role !== role) {
+              const targetFriendly = role === 'Owner' ? 'Owner' : 'Karyawan';
+              const errorLabel = language === 'id' ? `Akun Anda tidak terdaftar sebagai ${targetFriendly}.` : `Your account is not registered as ${targetFriendly}.`;
+              setError(errorLabel);
+              throw new Error(errorLabel);
+            }
+
             const mappedRole = cachedUser.role || 'Owner';
             const secureOwnerId = cachedUser.ownerId || (mappedRole === 'Employee' ? 'owner_offline_default' : 'offline_' + email.replace(/[^a-zA-Z0-9]/g, '_'));
             const secureBusinessId = cachedUser.businessId || 'bus_offline_' + secureOwnerId;
@@ -382,7 +463,6 @@ export default function Auth({ onNavigate }: { onNavigate: (view: any) => void }
             localStorage.setItem('offline_logged_in_user', JSON.stringify(simulatedUser));
             localStorage.setItem('inmarket_user_role', mappedRole);
               
-            // Seed activities if brand new + Log Login activity
             seedInitialUserActivities(email, cachedUser.username || email.split('@')[0]);
             logActivity('Pengguna berhasil masuk (login) ke platform InMarket.id', {
               userId: email,
@@ -402,63 +482,43 @@ export default function Auth({ onNavigate }: { onNavigate: (view: any) => void }
             return;
           }
 
-          // Offer offline sandbox bypass if network request fails or API key errors
-          if (isNetworkErr) {
-            setLocalModePrompt(true);
-          }
-          throw firebaseErr;
+          setError(getErrorMessage('', authErr.message));
+          throw authErr;
         }
 
       } else {
-        // Registering a new account
+        // Registering a new account via API
         try {
-          // Attempt standard firebase creation
-          const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-          if (userCredential.user) {
-            await updateProfile(userCredential.user, { displayName: username });
-            
-            // Build businessId and ownerId
-            const mappedRole = role === 'Owner' ? 'owner' : (role === 'Employee' ? 'employee' : 'guest');
-            let secureOwnerId = userCredential.user.uid;
-            if (role === 'Employee') {
-              secureOwnerId = ownerIdInput.trim() ? 'owner_' + ownerIdInput.replace(/[^a-zA-Z0-9]/g, '_') : 'owner_shared';
-            }
-            const secureBusinessId = 'bus_' + secureOwnerId;
+          const response = await fetch('/api/auth/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password, role, username }),
+          });
 
-            await setDoc(doc(db, 'users', userCredential.user.uid), {
-              email,
-              role: mappedRole,
-              ownerId: secureOwnerId,
-              businessId: secureBusinessId,
-              createdAt: new Date()
-            });
+          const data = await response.json();
 
-            // Save locally with complete inputs
-            localStorage.setItem('local_user_' + email, JSON.stringify({ 
-              email, 
-              password, 
-              role, 
-              username, 
-              phone,
-              ownerId: secureOwnerId,
-              businessId: secureBusinessId
-            }));
-            
-            localStorage.setItem('offline_logged_in_user', JSON.stringify(createSignedOfflineSession({
-              uid: userCredential.user.uid,
-              email,
-              displayName: username,
-              role,
-              businessId: secureBusinessId,
-              ownerId: secureOwnerId
-            })));
-            localStorage.setItem('inmarket_user_role', role);
+          if (!response.ok) {
+            throw new Error(data.error || 'Registration failed');
           }
           
-          // Seed activities for the brand new user immediately
+          // Save locally for offline fallback
+          const secureOwnerId = role === 'Owner' ? data.uid : (ownerIdInput.trim() ? 'owner_' + ownerIdInput.replace(/[^a-zA-Z0-9]/g, '_') : 'owner_shared');
+          const secureBusinessId = 'bus_' + secureOwnerId;
+
+          localStorage.setItem('local_user_' + email, JSON.stringify({ 
+            email, 
+            password, 
+            role, 
+            username, 
+            phone,
+            uid: data.uid,
+            ownerId: secureOwnerId,
+            businessId: secureBusinessId
+          }));
+          
+          // Seed activities
           seedInitialUserActivities(email, username);
           
-          // Switch to Email Verification flow to satisfy the verification requirement
           setVerificationPending(true);
           setResendCountdown(30);
           setSuccess(language === 'id' 
@@ -466,65 +526,11 @@ export default function Auth({ onNavigate }: { onNavigate: (view: any) => void }
             : 'Registered successfully! Verification link has been dispatched to your email.');
           playSuccessSound();
 
-        } catch (firebaseErr: any) {
-          const errCode = firebaseErr?.code || '';
-          const errMsg = firebaseErr?.message || '';
-          
-          if (
-            errCode.includes('email-already-in-use') || 
-            errMsg.includes('email-already-in-use') ||
-            errCode.includes('weak-password') || 
-            errMsg.includes('weak-password') ||
-            errCode.includes('invalid-email') || 
-            errMsg.includes('invalid-email')
-          ) {
-            console.warn("Registration rejected due to credentials validation:", errCode || errMsg);
-            throw firebaseErr; 
-          }
-          
-          console.warn("Register network/sandbox error, falling back to offline storage:", firebaseErr);
+        } catch (regErr: any) {
+          console.warn("Registration rejected:", regErr.message);
           setIsNetworkError(true);
-          
-          const mappedRole = role === 'Owner' ? 'owner' : (role === 'Employee' ? 'employee' : 'guest');
-          let secureOwnerId = 'owner_offline_default';
-          if (role === 'Employee') {
-            secureOwnerId = ownerIdInput.trim() ? 'owner_' + ownerIdInput.replace(/[^a-zA-Z0-9]/g, '_') : 'owner_shared';
-          } else if (role === 'Owner') {
-            secureOwnerId = 'owner_offline_' + email.replace(/[^a-zA-Z0-9]/g, '_');
-          }
-          const secureBusinessId = 'bus_offline_' + secureOwnerId;
-
-          // Save locally
-          localStorage.setItem('local_user_' + email, JSON.stringify({ 
-            email, 
-            password, 
-            role, 
-            username, 
-            phone,
-            ownerId: secureOwnerId,
-            businessId: secureBusinessId
-          }));
-          
-          localStorage.setItem('offline_logged_in_user', JSON.stringify(createSignedOfflineSession({
-            uid: 'offline_' + email.replace(/[^a-zA-Z0-9]/g, '_'),
-            email,
-            displayName: username,
-            role,
-            businessId: secureBusinessId,
-            ownerId: secureOwnerId
-          })));
-          localStorage.setItem('inmarket_user_role', role);
-          
-          // Seed activities for the brand new user immediately
-          seedInitialUserActivities(email, username);
-          
-          // Proceed to email verification state
-          setVerificationPending(true);
-          setResendCountdown(30);
-          setSuccess(language === 'id' 
-            ? 'Pendaftaran Offline Sukses! Silakan verifikasi email Anda di terminal ini.' 
-            : 'Offline Registration Succeeded! Please complete secure verification on this terminal.');
-          playSuccessSound();
+          setError(regErr.message);
+          throw regErr;
         }
       }
     } catch (e: any) {
@@ -1181,6 +1187,38 @@ export default function Auth({ onNavigate }: { onNavigate: (view: any) => void }
                   language === 'id' ? "DAFTARKAN BARU" : "REGISTER PROFILE"
                 )}
               </motion.button>
+
+              {/* OR DIVIDER for Google Login */}
+              {role === 'Owner' && !verificationPending && !isResetMode && (
+                <>
+                  <div className="relative my-4">
+                    <div className="absolute inset-0 flex items-center px-4"><span className="w-full border-t border-slate-200 dark:border-white/5"></span></div>
+                    <div className="relative flex justify-center text-[10px] uppercase tracking-widest font-black text-slate-500 bg-transparent px-2">
+                      <span className={cn("px-2", theme === 'light' ? "bg-white/80" : "bg-[#030107]/80")}>OR SECURE WORKSPACE LINK</span>
+                    </div>
+                  </div>
+
+                  <motion.button
+                    type="button"
+                    onClick={handleGoogleSignIn}
+                    disabled={isLoading}
+                    whileHover={{ scale: 1.01 }}
+                    whileTap={{ scale: 0.99 }}
+                    className={cn(
+                      "w-full py-4 rounded-2xl font-black text-xs tracking-widest uppercase flex items-center justify-center gap-2.5 shadow-xl disabled:opacity-50 transition-all cursor-pointer",
+                      theme === 'light' ? "bg-white text-slate-900 border border-slate-200" : "bg-white text-slate-900 border border-transparent"
+                    )}
+                  >
+                    <svg className="w-4 h-4" viewBox="0 0 24 24">
+                      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-1 .67-2.28 1.07-3.71 1.07-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                      <path fill="#FBBC05" d="M5.84 14.11c-.22-.66-.35-1.36-.35-2.11s.13-1.45.35-2.11V7.05H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.95l3.66-2.84z" />
+                      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.05l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
+                    </svg>
+                    {language === 'id' ? "SINKRON DENGAN GOOGLE" : "SYNC WITH GOOGLE WORKSPACE"}
+                  </motion.button>
+                </>
+              )}
             </div>
 
             {/* FUTURISTIC NEON NETWORK DIAGNOSTICS & TROUBLESHOOTING PANEL */}

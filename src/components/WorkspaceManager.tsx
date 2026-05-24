@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { useThemeLanguage } from '../context/ThemeLanguageContext';
 import toast from 'react-hot-toast';
+import { setWorkspaceToken, setWorkspaceUserEmail } from '../lib/workspaceSync';
 
 // Google Scopes used
 const SCOPES = [
@@ -173,6 +174,8 @@ export default function WorkspaceManager() {
 
       if (token) {
         setAccessToken(token);
+        setWorkspaceToken(token);
+        setWorkspaceUserEmail(result.user.email);
         setGoogleUser(result.user);
         toast.success(language === 'id' ? 'Google Workspace Tersambung!' : 'Google Workspace Connected!');
         // Refresh immediate tab
@@ -182,7 +185,11 @@ export default function WorkspaceManager() {
       }
     } catch (err: any) {
       console.error(err);
-      toast.error(language === 'id' ? 'Koneksi Gagal. Silakan coba kembali.' : 'Connection failed. Please retry.');
+      if (err.code === 'auth/popup-closed-by-user') {
+        toast.error(language === 'id' ? 'Otorisasi dibatalkan (pop-up ditutup).' : 'Authorization cancelled (pop-up closed).');
+      } else {
+        toast.error(language === 'id' ? 'Koneksi Gagal. Silakan coba kembali.' : 'Connection failed. Please retry.');
+      }
     } finally {
       setIsLoggingIn(false);
     }
@@ -190,6 +197,8 @@ export default function WorkspaceManager() {
 
   const handleDisconnect = () => {
     setAccessToken(null);
+    setWorkspaceToken(null);
+    setWorkspaceUserEmail(null);
     toast.success(language === 'id' ? 'Google Workspace Dinonaktifkan Hubungannya' : 'Google Workspace Disconnected');
   };
 
@@ -1021,7 +1030,6 @@ export default function WorkspaceManager() {
                         type="date"
                         className="w-full mt-1 p-2.5 rounded-lg bg-black/40 border border-slate-800 text-xs text-white focus:outline-none focus:border-cyan-400"
                         value={newEvent.date}
-                        className-scheme="dark"
                         onChange={e => setNewEvent({ ...newEvent, date: e.target.value })}
                       />
                     </div>

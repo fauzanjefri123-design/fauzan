@@ -63,6 +63,8 @@ import {
 import { cn, getPartitionedKey, safeJsonParse } from '../lib/utils';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import Papa from 'papaparse';
+import Markdown from 'react-markdown';
+import rehypeRaw from 'rehype-raw';
 import { 
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   BarChart, Bar, AreaChart, Area 
@@ -83,6 +85,7 @@ import Profile from './Profile';
 import AttendanceQR from './AttendanceQR';
 import WorkspaceManager from './WorkspaceManager';
 import QuickActions from './QuickActions';
+import { addAttendanceEntry } from '../lib/firestoreService';
 import { useThemeLanguage } from '../context/ThemeLanguageContext';
 import { translations } from '../lib/translations';
 import ThemeLanguageSwitcher from './ThemeLanguageSwitcher';
@@ -101,6 +104,7 @@ import {
   playCloseStoreSound
 } from '../lib/sounds';
 import { logActivity, subscribeToActivities, seedInitialUserActivities } from '../lib/activities';
+import { getWorkspaceToken, createGoogleDocReport } from '../lib/workspaceSync';
 
 import { useSoundPreferences } from '../hooks/useSoundPreferences';
 
@@ -128,6 +132,7 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
 
   // Active sub-view within dashboard
   const [activeTab, setActiveTab] = useState<string>('dashboard');
+  const [isAiFloatingOpen, setIsAiFloatingOpen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isLargeScreen, setIsLargeScreen] = useState(false);
 
@@ -180,6 +185,8 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
   const [employeeInputCode, setEmployeeInputCode] = useState('');
   const [attendanceProofUrl, setAttendanceProofUrl] = useState('');
   const [attendanceSuccess, setAttendanceSuccess] = useState(false);
+  const [attendanceError, setAttendanceError] = useState('');
+  const [attendances, setAttendances] = useState<any[]>([]);
 
   // Chat message logs
   const [chatMessages, setChatMessages] = useState<any[]>(() => {
@@ -593,6 +600,60 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
     }, 200);
   };
 
+  const handleExportToGoogleDocs = async (type: string) => {
+    const token = getWorkspaceToken();
+    if (!token) {
+      triggerNotification('transaksi', language === 'id' ? 'Google Workspace tidak terhubung. Silakan login ulang via Google.' : 'Google Workspace disconnected. Please re-login via Google.');
+      // Fallback for UI feedback
+      return;
+    }
+
+    playScanSound();
+    setExportModal('google_docs');
+    setExportProgress(10);
+    
+    try {
+        let contentStr = "";
+        let title = `InMarket Digital Report - ${type.toUpperCase()}`;
+
+        if (type === 'laporan_usaha') {
+            contentStr = "SUMMARY BUSINESS LEDGER:\n\nTotal Omset: Rp 1.450.000\nTarget Bisnis: Rp 5.000.000\nEfisiensi Staff: 98%\nStatus Operasional: ACTIVE\n";
+        } else if (type === 'stock_barang') {
+            contentStr = "INVENTORY STOCK DATA:\n\n" + products.map(p => `- ${p.name.toUpperCase()}: IDR ${p.price.toLocaleString()} (Stock: ${p.stock}) [SKU: ${p.barcode || 'N/A'}]`).join('\n');
+        } else if (type === 'absensi') {
+           contentStr = "ATTENDANCE VERIFICATION LOGS:\n\n- Terverifikasi: 12 Entri\n- Terlambat: 1\n- Tidak Hadir: 0\n";
+        } else {
+            contentStr = "SALES TRANSACTION BUFFER:\n\nData transaksi penjualan terakhir ditarik dari sinkronisasi cloud real-time.\n";
+        }
+
+        const interval = setInterval(() => {
+          setExportProgress(prev => {
+            if (prev >= 90) {
+              clearInterval(interval);
+              return 90;
+            }
+            return prev + 10;
+          });
+        }, 100);
+
+        const result = await createGoogleDocReport(token, title, contentStr);
+        clearInterval(interval);
+        setExportProgress(100);
+
+        setTimeout(() => {
+            setExportModal(null);
+            triggerNotification('transaksi', `Google Doc report successfully generated! Accessing link...`);
+            logSystemActivity(`Mengekspor laporan Google Docs: ${type}`);
+            window.open(result.url, '_blank');
+        }, 600);
+
+    } catch (err: any) {
+        setExportModal(null);
+        console.error("Google Docs Export Error:", err);
+        triggerNotification('transaksi', `Export GDocs Failed: ${err.message}`);
+    }
+  };
+
   // Voice AI Synthesis Feedback Helper
   const handleVoiceFeedback = (textToSpeak: string) => {
     if ('speechSynthesis' in window) {
@@ -645,9 +706,61 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
       const criticalNames = criticalProducts.map(p => p.name).join(', ') || 'Kopi Cappuccino';
 
       // Preset pattern matching
-      if (normalizedInp.includes('jadwal') || normalizedInp.includes('hari ini') || normalizedInp.includes('shift')) {
+      if (normalizedInp.includes('tambah') && (normalizedInp.includes('produk') || normalizedInp.includes('barang'))) {
+        setActiveTab('stock');
+        
+        // Example: "Tambah produk kopi harga 15000 stok 20"
+        let extractedName = '';
+        let extractedPrice = 0;
+        let extractedStock = 0;
+        
+        const nameMatch = normalizedInp.match(/(?:produk|barang)\s+([a-zA-Z\s]+?)(?=\s+harga|\s+stok|$)/i);
+        if (nameMatch) extractedName = nameMatch[1].trim();
+
+        const priceMatch = normalizedInp.match(/harga\s+(\d+)/i);
+        if (priceMatch) extractedPrice = parseInt(priceMatch[1], 10);
+        
+        const stockMatch = normalizedInp.match(/stok\s+(\d+)/i);
+        if (stockMatch) extractedStock = parseInt(stockMatch[1], 10);
+
+        if (extractedName || extractedPrice || extractedStock) {
+          setTimeout(() => {
+            window.dispatchEvent(new CustomEvent('voice-add-product', { detail: { name: extractedName, price: extractedPrice, stock: extractedStock } }));
+          }, 300); // Give time for tab to switch
+          reply = language === 'id'
+            ? `Membuka inventaris dan mempersiapkan produk ${extractedName || 'baru'}. Silakan simpan untuk konfirmasi.`
+            : `Opening inventory and filling details for ${extractedName || 'new product'}. Please save to confirm.`;
+        } else {
+          reply = language === 'id' 
+            ? `Tentu, saya sudah mengalihkan layar Anda ke modul Inventaris. Silakan klik tombol "Tambah Produk Baru" untuk mendaftarkan barang baru.`
+            : `Certainly, I've switched your view to the Inventory module. You can now click the "Add New Product" button to register new stocks.`;
+        }
+        triggerNotification('ai', 'Membuka menu Inventaris...');
+
+      } else if (normalizedInp.includes('cari') && (normalizedInp.includes('transaksi') || normalizedInp.includes('nota') || normalizedInp.includes('invoice'))) {
+        setActiveTab('stock'); // SalesHistory is within Inventory tab ('stock')
+        
+        const queryMatch = normalizedInp.match(/(?:transaksi|nota|invoice)\s+(.*)/i);
+        const searchQuery = queryMatch ? queryMatch[1].trim() : '';
+
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent('voice-search-transaction', { detail: { query: searchQuery } }));
+        }, 300);
+
+        if (searchQuery) {
+          reply = language === 'id'
+            ? `Siap. Membuka riwayat transaksi dan mencari: ${searchQuery}.`
+            : `Roger that. Opening Transaction History and searching for: ${searchQuery}.`;
+        } else {
+          reply = language === 'id'
+            ? `Siap. Modul Riwayat Transaksi sudah terbuka. Anda bisa menggunakan kolom pencarian di sana untuk menemukan nomor invoice atau nama pelanggan.`
+            : `Roger that. The Transaction History module is now open. You can use the search bar there to find specific invoices or customer names.`;
+        }
+        triggerNotification('ai', 'Membuka riwayat transaksi untuk pencarian...');
+
+      } else if (normalizedInp.includes('jadwal') || normalizedInp.includes('hari ini') || normalizedInp.includes('shift')) {
         reply = language === 'id' 
-          ? `Halo ${employeeName}. Jadwal kerja Anda hari ini dimulai dari pukul 08:00 WIB sampai 16:00 WIB pada shift reguler utama. Harap lakukan presensi swafoto tepat waktu.`
+          ? `Halo ${employeeName}. Jadwal kerja Anda hari ini dimulai dari pukul 08:00 WIB sampai 16:00 WIB pada shift reguler utama. Harap lakukan presensi kehadiran tepat waktu.`
           : `Hello ${employeeName}. Your work schedule today starts from 08:00 AM to 04:00 PM on the main shift. Please remember to check in on time!`;
       } else if (normalizedInp.includes('stok') || normalizedInp.includes('hampir habis') || normalizedInp.includes('barang') || normalizedInp.includes('stock')) {
         reply = language === 'id'
@@ -673,15 +786,31 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
             : `Your salary for active period is currently queueing for owner payroll authorization. Please wait a bit or raise an inquiry to management.`;
         }
       } else {
-        // Fallback response with AI advice
-        reply = language === 'id'
-          ? `Saya mendengarkan Anda: "${queryText}". Untuk bantuan operasional, silakan tanyakan perihal jadwal, stok barang habis, tugas harian, status gaji, atau pencapaian ranking Anda!`
-          : `I hear you: "${queryText}". For staff workflows, you can ask me about your work schedule, depleted stocks, daily assignments, salary pay status, or your current tier ranking!`;
+        // Fallback response with Gemini AI using the Ultimate Combined 2026 Instruction
+        fetch('/api/gemini/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: queryText })
+        })
+        .then(res => res.json())
+        .then(data => {
+          reply = data.result || (language === 'id' ? "Maaf, terjadi kesalahan saat menghubungi AI." : "Sorry, an error occurred while generating response.");
+          setAiChat((prev: any) => [...prev, { role: 'assistant', text: reply }]);
+          handleVoiceFeedback(reply);
+          triggerNotification('ai', 'Menerima respon dari Master AI Assistant 2026...');
+        })
+        .catch(err => {
+          console.error(err);
+          reply = language === 'id' ? "Gagal memproses ke database awan AI." : "Failed processing to cloud AI database.";
+          setAiChat((prev: any) => [...prev, { role: 'assistant', text: reply }]);
+        });
       }
 
-      setAiChat(prev => [...prev, { role: 'assistant', text: reply }]);
-      handleVoiceFeedback(reply);
-      triggerNotification('ai', language === 'id' ? 'Voice AI memberikan respon audio...' : 'Voice AI responding via text-to-speech...');
+      if (reply) {   // Only when reply is predefined locally
+        setAiChat((prev: any) => [...prev, { role: 'assistant', text: reply }]);
+        handleVoiceFeedback(reply);
+        triggerNotification('ai', language === 'id' ? 'Voice AI memberikan respon audio...' : 'Voice AI responding via text-to-speech...');
+      }
     }, 1500);
   };
 
@@ -916,6 +1045,19 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
         );
         setRealtimeExpenses(uniqueData);
       });
+      
+      const qAttendances = query(collection(db, 'attendance'));
+      const unsubscribeAttendances = onSnapshot(qAttendances, (snapshot) => {
+        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        // Just sort locally or if it existed properly:
+        setAttendances(data.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime()));
+      });
+      
+      return () => {
+        unsubscribeSales();
+        unsubscribeExpenses();
+        unsubscribeAttendances();
+      };
     }
 
     return () => {
@@ -1019,13 +1161,13 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
   };
 
   // Employee Check In
-  const handleEmployeeCheckIn = (e: React.FormEvent) => {
+  const handleEmployeeCheckIn = async (e: React.FormEvent) => {
     e.preventDefault();
     if (employeeInputCode.trim().toUpperCase() === attendanceCode) {
       playSuccessSound();
       setAttendanceSuccess(true);
+      setAttendanceError('');
       
-      // Update employee stats / EXP
       const updated = {
         ...employeeProfile,
         exp: employeeProfile.exp + 25
@@ -1034,14 +1176,40 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
       const key = getPartitionedKey('inmarket_employee_profile', false);
       localStorage.setItem(key, JSON.stringify(updated));
 
+      // Persist to Cloud Node (Firestore)
+      if (auth.currentUser) {
+        try {
+          const now = new Date();
+          const hour = now.getHours();
+          // Assuming shift start at 8:00
+          const statusText = hour < 8 ? 'Tepat Waktu' : 'Terlambat';
+          
+          await addAttendanceEntry(auth.currentUser.uid, {
+            employeeId: auth.currentUser.uid,
+            employeeName: updated.fullName || auth.currentUser.displayName || 'Karyawan',
+            employeeEmail: auth.currentUser.email || '-',
+            status: statusText,
+            method: 'In-App Auth Code',
+            codeUsed: attendanceCode,
+            date: now.toLocaleDateString('id-ID'),
+            time: now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+          });
+          triggerNotification('absensi', 'Absensi berhasil tersimpan ke sistem cloud central.');
+        } catch (err) {
+          console.error("Firestore attendance sync failed", err);
+          triggerNotification('absensi', 'Absensi tersimpan secara lokal (Server offline)');
+        }
+      }
+
       setTimeout(() => {
         setAttendanceSuccess(false);
         setEmployeeInputCode('');
         setAttendanceProofUrl('');
+        setAttendanceError('');
       }, 4000);
     } else {
       playScanSound();
-      alert(language === 'id' ? '❌ Kode absensi salah!' : '❌ Incorrect attendance code!');
+      setAttendanceError(language === 'id' ? '❌ Kode absensi salah! Harap cek ulang.' : '❌ Incorrect attendance code! Please check again.');
     }
   };
 
@@ -1550,16 +1718,23 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
               { id: 'security', name: t('keamanan'), icon: ShieldCheck, test: userRole === 'Owner' },
               { id: 'grafik', name: t('settings'), icon: BarChart3, test: userRole === 'Owner' },
               { id: 'chat', name: `${t('chat')} (${chatMessages.length})`, icon: MessageCircle, test: true },
-              { id: 'ai', name: t('aiAssistant'), icon: Bot, test: true }
+              { id: 'ai', name: t('aiAssistant'), icon: Bot, test: true, isModal: true }
             ].map(item => {
               if (!item.test) return null;
               return (
                 <button 
                   key={item.id} 
-                  onClick={() => { setActiveTab(item.id); setIsSidebarOpen(false); }} 
+                  onClick={() => { 
+                    if (item.id === 'ai') {
+                      setIsAiFloatingOpen(true);
+                    } else {
+                      setActiveTab(item.id); 
+                    }
+                    setIsSidebarOpen(false); 
+                  }} 
                   className={cn(
                     "w-full flex items-center justify-between p-3 rounded-2xl text-xs font-black transition-all transform hover:translate-x-1",
-                    activeTab === item.id 
+                    (activeTab === item.id && !item.isModal) 
                       ? "bg-gradient-to-r from-violet-600/15 to-transparent border-l-4 border-violet-500 dark:text-white" 
                       : "opacity-60 hover:opacity-100 dark:text-violet-200"
                   )}
@@ -1715,6 +1890,65 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
           {/* TAB 1: EXECUTIVE DASHBOARD REPORT */}
           {activeTab === 'dashboard' && (
             <div className="space-y-6">
+              
+              {/* Financial Summary Top Stats for Owner - Moved to Top */}
+              {userRole === 'Owner' && (
+                <div className="p-1 rounded-[2.5rem] bg-gradient-to-br from-violet-500/10 via-transparent to-cyan-500/10 border border-violet-500/10 mb-8 shadow-2xl">
+                  <div className="p-6 md:p-8 space-y-6">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div>
+                        <h3 className="text-2xl font-black bg-clip-text text-transparent bg-gradient-to-r from-violet-400 to-cyan-300">
+                          {language === 'id' ? 'Ringkasan Keuangan' : 'Financial Summary'}
+                        </h3>
+                        <p className="text-[10px] font-mono text-slate-500 dark:text-violet-400/60 uppercase tracking-[0.2em] mt-1">REALTIME_LEDGER_DATA_v1.0</p>
+                      </div>
+                      <button
+                        onClick={handleExportFinancials}
+                        className="px-5 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-600 hover:brightness-110 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-[0_0_15px_rgba(16,185,129,0.3)] transition-all flex items-center justify-center gap-2"
+                      >
+                        <Download size={14} /> {language === 'id' ? 'Export Laporan' : 'Export Report'}
+                      </button>
+                    </div>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                      <button onClick={() => setActiveTab('grafik')} className="p-6 rounded-3xl bg-white dark:bg-black/40 border border-indigo-100/10 backdrop-blur-xl hover:border-violet-500 hover:bg-violet-500/5 transition-all outline-none focus:ring-2 focus:ring-violet-500/50 flex flex-col justify-between h-40 text-left group shadow-xl">
+                        <span className="text-[10px] uppercase font-black tracking-wider opacity-50 block group-hover:opacity-100 transition-opacity">{t('totalProfit')}</span>
+                        <div className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-violet-600 via-indigo-500 to-cyan-500 group-hover:scale-105 transition-transform origin-left">
+                          {financeStats.empty ? 'Rp0' : `Rp${financeStats.profit.toLocaleString()}`}
+                        </div>
+                        <p className="text-[10px] font-bold text-emerald-400 flex items-center gap-1">
+                          <TrendingUp size={12} /> {language === 'id' ? 'Laba Bersih Toko' : 'Store Net Profit'}
+                        </p>
+                      </button>
+
+                      <button onClick={() => setActiveTab('grafik')} className="p-6 rounded-3xl bg-white dark:bg-black/40 border border-indigo-100/10 backdrop-blur-xl hover:border-rose-500 hover:bg-rose-500/5 transition-all outline-none focus:ring-2 focus:ring-rose-500/50 flex flex-col justify-between h-40 text-left group shadow-xl">
+                         <span className="text-[10px] uppercase font-black tracking-wider opacity-50 block text-rose-400 group-hover:opacity-100 transition-opacity">Total Pengeluaran</span>
+                         <div className="text-3xl font-black text-rose-500 group-hover:scale-105 transition-transform origin-left">
+                           {financeStats.empty ? 'Rp0' : `Rp${financeStats.loss.toLocaleString()}`}
+                         </div>
+                         <p className="text-[10px] font-mono opacity-50">Sewa, Gaji, & Operasional</p>
+                      </button>
+
+                      <button onClick={() => setActiveTab('grafik')} className="p-6 rounded-3xl bg-white dark:bg-black/40 border border-indigo-100/10 backdrop-blur-xl hover:border-cyan-500 hover:bg-cyan-500/5 transition-all outline-none focus:ring-2 focus:ring-cyan-500/50 flex flex-col justify-between h-40 text-left group shadow-xl">
+                        <span className="text-[10px] uppercase font-black tracking-wider opacity-50 block group-hover:opacity-100 transition-opacity">Net Margin</span>
+                        <div className={cn("text-3xl font-black group-hover:scale-105 transition-transform origin-left", (financeStats.profit - financeStats.loss) < 0 ? 'text-rose-500' : 'text-indigo-600 dark:text-cyan-400')}>
+                          {financeStats.empty ? 'Rp0' : `Rp${(financeStats.profit - financeStats.loss).toLocaleString()}`}
+                        </div>
+                        <p className="text-[10px] font-mono opacity-50">Sisa Kas Setelah Pengeluaran</p>
+                      </button>
+
+                      <button onClick={() => setActiveTab('grafik')} className="p-6 rounded-3xl bg-white dark:bg-black/40 border border-indigo-100/10 backdrop-blur-xl hover:border-indigo-500 hover:bg-indigo-500/5 transition-all outline-none focus:ring-2 focus:ring-indigo-500/50 flex flex-col justify-between h-40 text-left group shadow-xl">
+                        <span className="text-[10px] uppercase font-black tracking-wider opacity-50 block group-hover:opacity-100 transition-opacity">{t('revenue')} BRUTO</span>
+                        <div className="text-3xl font-black text-indigo-600 dark:text-cyan-400 group-hover:scale-105 transition-transform origin-left">
+                          {financeStats.empty ? 'Rp0' : `Rp${financeStats.salesTotal.toLocaleString()}`}
+                        </div>
+                        <p className="text-[10px] font-mono opacity-50">Total Kumulatif Penjualan</p>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <QuickActions setActiveTab={setActiveTab} />
               
               {/* Responsive layout owner business status settings banner */}
@@ -1744,7 +1978,7 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
                         {getGreeting() === 'Selamat Malam' ? 'Selamat malam' : getGreeting() === 'Selamat Sore' ? 'Selamat sore' : getGreeting() === 'Selamat Siang' ? 'Selamat siang' : 'Selamat pagi'},
                       </span>
                       <span className="bg-clip-text text-transparent bg-gradient-to-r from-violet-400 via-fuchsia-400 to-cyan-300 drop-shadow-[0_0_25px_rgba(168,85,247,0.55)] select-none hover:scale-105 transition-transform duration-300 font-black">
-                        {userRole === 'Employee' || userRole === 'Karyawan' 
+                        {userRole === 'Employee' 
                           ? (employeeProfile.fullName || currentUser?.displayName || 'Employee') 
                           : (currentUser?.displayName || shopData.ownerName || 'Owner')}
                       </span>
@@ -1880,126 +2114,128 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
                 </div>
               </div>
 
-              {/* Statistics row */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mt-6 mb-4">
-                <h3 className="text-lg font-black bg-clip-text text-transparent bg-gradient-to-r from-violet-400 to-cyan-300">
-                  {language === 'id' ? 'Ringkasan Keuangan' : 'Financial Summary'}
-                </h3>
-                <button
-                  onClick={handleExportFinancials}
-                  className="px-5 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-600 hover:brightness-110 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-[0_0_15px_rgba(16,185,129,0.3)] transition-all flex items-center justify-center gap-2"
-                >
-                  <Download size={14} /> {language === 'id' ? 'Export Laporan' : 'Export Report'}
-                </button>
-              </div>
-              
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                <div className="p-6 rounded-3xl bg-white dark:bg-black/25 border border-indigo-100/10 hover:border-violet-500/50 transition-all flex flex-col justify-between h-36">
-                  <span className="text-[10px] uppercase font-black tracking-wider opacity-50 block">{t('totalProfit')}</span>
-                  <div className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-violet-600 via-indigo-500 to-cyan-500">
-                    {financeStats.empty ? 'Rp0' : `Rp${financeStats.profit.toLocaleString()}`}
+               {/* Statistics row */}
+              {userRole === 'Owner' ? (
+                <>
+                  {/* Analytics graph row */}
+                  <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+                    
+                    {/* Chart */}
+                    <div className="xl:col-span-2 p-6 rounded-3xl bg-white dark:bg-black/25 border border-indigo-100/10 min-h-[350px] h-auto relative overflow-hidden max-w-full">
+                      <h4 className="text-xs uppercase tracking-widest font-mono text-indigo-500 mb-6 flex items-center gap-1.5"><TrendingUp size={16} /> LEDGER VALUATIONS HISTORICAL</h4>
+                      
+                      {financeStats.empty ? (
+                         <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500">
+                            <TrendingUp size={48} className="mb-4 opacity-20" />
+                            <p className="text-sm font-bold opacity-50">Belum ada transaksi</p>
+                         </div>
+                      ) : (
+                        <div className="w-full min-h-[280px]">
+                          <ResponsiveContainer width="100%" height={280}>
+                            <AreaChart data={financeStats.chartData}>
+                              <defs>
+                                <linearGradient id="colorSales" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.4}/>
+                                  <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0}/>
+                                </linearGradient>
+                                <linearGradient id="colorLoss" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.4}/>
+                                  <stop offset="95%" stopColor="#f43f5e" stopOpacity={0}/>
+                                </linearGradient>
+                              </defs>
+                              <XAxis dataKey="name" stroke="#6b7280" fontSize={10} axisLine={false} />
+                              <YAxis stroke="#6b7280" fontSize={10} axisLine={false} />
+                              <Tooltip contentStyle={{ backgroundColor: '#090514', border: '1px solid #c084fc', borderRadius: '12px' }} />
+                              <Area type="monotone" name="Sales/Revenue" dataKey="sales" stroke="#a855f7" strokeWidth={3} fillOpacity={1} fill="url(#colorSales)" />
+                              <Area type="monotone" name="Expenses/Loss" dataKey="expenses" stroke="#f43f5e" strokeWidth={3} fillOpacity={1} fill="url(#colorLoss)" />
+                            </AreaChart>
+                          </ResponsiveContainer>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="xl:col-span-1 p-6 rounded-3xl bg-white dark:bg-black/25 border border-indigo-100/10 flex flex-col justify-between min-h-[350px] h-auto overflow-hidden max-w-full">
+                      <h4 className="text-xs uppercase tracking-widest font-mono text-indigo-500 border-b border-indigo-100/10 pb-4 mb-2">{t('quickActions')}</h4>
+                      
+                      <div className="space-y-3">
+                        <div className="p-3.5 rounded-2xl bg-violet-600/15 border border-violet-500/20">
+                          <span className="text-[10px] font-black uppercase block opacity-60 mb-2">{t('salaryFeature')}</span>
+                          <button 
+                            onClick={handlePaySalary}
+                            disabled={isSalaryPaid}
+                            className="w-full py-2.5 bg-violet-600 text-white rounded-xl text-xs font-black uppercase hover:bg-violet-700 transition"
+                          >
+                            {isSalaryPaid ? '✅ GAJI TELAH DITRANSFER' : t('paySalary')}
+                          </button>
+                        </div>
+
+                        <div className="flex gap-2">
+                          <button onClick={() => setActiveTab('kasir')} className="flex-1 py-3 bg-slate-900 text-white dark:bg-white/10 rounded-xl text-xs font-black uppercase text-center hover:brightness-110 transition">{t('addTransaction')}</button>
+                          <button onClick={handleGenerateAttendanceCode} className="flex-1 py-3 bg-slate-900 text-white dark:bg-white/10 rounded-xl text-xs font-black uppercase text-center hover:brightness-110 transition">{t('genAttendance')}</button>
+                        </div>
+                      </div>
+
+                      <p className="text-[9px] font-mono opacity-50 mt-4 text-center">InMarket Platform v2.5 Sandbox Instance</p>
+                    </div>
                   </div>
-                  <p className="text-[10px] font-bold text-emerald-400 flex items-center">Dari total penjualan - modal</p>
-                </div>
-
-                <div className="p-6 rounded-3xl bg-white dark:bg-black/25 border border-indigo-100/10 hover:border-violet-500/50 transition-all flex flex-col justify-between h-36">
-                   <span className="text-[10px] uppercase font-black tracking-wider opacity-50 block text-rose-400">Total Kerugian / Pengeluaran</span>
-                   <div className="text-3xl font-black text-rose-500">
-                     {financeStats.empty ? 'Rp0' : `Rp${financeStats.loss.toLocaleString()}`}
-                   </div>
-                   <p className="text-[10px] font-mono opacity-50">Sewa, Beli barang, dsb</p>
-                </div>
-
-                <div className="p-6 rounded-3xl bg-white dark:bg-black/25 border border-indigo-100/10 hover:border-violet-500/50 transition-all flex flex-col justify-between h-36">
-                  <span className="text-[10px] uppercase font-black tracking-wider opacity-50 block">Net Income</span>
-                  <div className={cn("text-3xl font-black", (financeStats.profit - financeStats.loss) < 0 ? 'text-rose-500' : 'text-indigo-600 dark:text-cyan-400')}>
-                    {financeStats.empty ? 'Rp0' : `Rp${(financeStats.profit - financeStats.loss).toLocaleString()}`}
+                </>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  {/* Tier/EXP Card */}
+                  <div className="p-6 rounded-3xl bg-gradient-to-br from-violet-600 to-indigo-700 border border-white/10 shadow-2xl relative overflow-hidden flex flex-col items-center justify-center text-center">
+                    <div className="absolute top-0 right-0 w-24 h-24 bg-white/5 rounded-full blur-xl pointer-events-none" />
+                    <Crown className="text-amber-300 mb-4 animate-bounce" size={48} />
+                    <h4 className="text-xl font-black text-white uppercase tracking-widest leading-none mb-1">{getEmployeeTier(employeeProfile.exp).name}</h4>
+                    <span className="text-[10px] font-mono text-violet-200 uppercase tracking-widest opacity-80 mb-6">STAFF PERFORMANCE RANKING</span>
+                    
+                    <div className="w-full space-y-2">
+                      <div className="flex justify-between text-[10px] font-bold text-white/70">
+                        <span>PROGRESS EXP</span>
+                        <span>{employeeProfile.exp}pts</span>
+                      </div>
+                      <div className="w-full h-2.5 bg-black/30 rounded-full border border-white/10 p-0.5 overflow-hidden">
+                        <div 
+                          style={{ width: `${Math.min(100, (employeeProfile.exp / 2000) * 100)}%` }}
+                          className="h-full bg-gradient-to-r from-cyan-400 to-indigo-400 rounded-full shadow-[0_0_10px_rgba(34,211,238,0.5)]"
+                        />
+                      </div>
+                    </div>
                   </div>
-                  <p className="text-[10px] font-mono opacity-50">Profit - Loss</p>
-                </div>
 
-                <div className="p-6 rounded-3xl bg-white dark:bg-black/25 border border-indigo-100/10 hover:border-violet-500/50 transition-all flex flex-col justify-between h-36">
-                  <span className="text-[10px] uppercase font-black tracking-wider opacity-50 block">{t('revenue')} KASIR</span>
-                  <div className="text-3xl font-black text-indigo-600 dark:text-cyan-400">
-                    {financeStats.empty ? 'Rp0' : `Rp${financeStats.salesTotal.toLocaleString()}`}
-                  </div>
-                  <p className="text-[10px] font-mono opacity-50">Total uang masuk via POS</p>
-                </div>
-              </div>
-
-              {/* Analytics graph row */}
-              <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-                
-                {/* Chart */}
-                <div className="xl:col-span-2 p-6 rounded-3xl bg-white dark:bg-black/25 border border-indigo-100/10 min-h-[350px] h-auto relative overflow-hidden max-w-full">
-                  <h4 className="text-xs uppercase tracking-widest font-mono text-indigo-500 mb-6 flex items-center gap-1.5"><TrendingUp size={16} /> LEDGER VALUATIONS HISTORICAL</h4>
-                  
-                  {financeStats.empty ? (
-                     <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500">
-                        <TrendingUp size={48} className="mb-4 opacity-20" />
-                        <p className="text-sm font-bold opacity-50">Belum ada transaksi</p>
+                  {/* Attendance Card */}
+                  <div className="p-6 rounded-3xl bg-white dark:bg-black/25 border border-indigo-100/10 flex flex-col justify-center items-center text-center space-y-4">
+                     <div className="w-16 h-16 bg-violet-600/10 border border-violet-500/20 rounded-2xl flex items-center justify-center text-violet-500">
+                       <ClipboardCheck size={32} />
                      </div>
-                  ) : (
-                    <div className="w-full min-h-[280px]">
-                      <ResponsiveContainer width="100%" height={280}>
-                        <AreaChart data={financeStats.chartData}>
-                          <defs>
-                            <linearGradient id="colorSales" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.4}/>
-                              <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0}/>
-                            </linearGradient>
-                            <linearGradient id="colorLoss" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.4}/>
-                              <stop offset="95%" stopColor="#f43f5e" stopOpacity={0}/>
-                            </linearGradient>
-                          </defs>
-                          <XAxis dataKey="name" stroke="#6b7280" fontSize={10} axisLine={false} />
-                          <YAxis stroke="#6b7280" fontSize={10} axisLine={false} />
-                          <Tooltip contentStyle={{ backgroundColor: '#090514', border: '1px solid #c084fc', borderRadius: '12px' }} />
-                          <Area type="monotone" name="Sales/Revenue" dataKey="sales" stroke="#a855f7" strokeWidth={3} fillOpacity={1} fill="url(#colorSales)" />
-                          <Area type="monotone" name="Expenses/Loss" dataKey="expenses" stroke="#f43f5e" strokeWidth={3} fillOpacity={1} fill="url(#colorLoss)" />
-                        </AreaChart>
-                      </ResponsiveContainer>
-                    </div>
-                  )}
+                     <div>
+                       <h5 className="text-sm font-black uppercase tracking-widest">CHECK-IN ABSENSI</h5>
+                       <p className="text-[10px] text-slate-500 leading-relaxed mt-1">Lakukan presensi kehadiran digital untuk validasi honor harian Anda.</p>
+                     </div>
+                     <button 
+                       onClick={() => setActiveTab('absensi')}
+                       className="w-full py-3.5 bg-slate-900 dark:bg-white text-white dark:text-slate-950 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:scale-[1.03] transition-transform"
+                     >
+                       MULAI ABSENSI
+                     </button>
+                  </div>
+
+                  {/* Wallet Card */}
+                  <div className="p-6 rounded-3xl bg-white dark:bg-black/25 border border-indigo-100/10 flex flex-col justify-between">
+                     <div className="flex justify-between items-start">
+                       <div>
+                         <span className="text-[10px] uppercase font-black tracking-wider opacity-50 block">SALDO GAJI ESTIMASI</span>
+                         <div className="text-2xl font-black text-indigo-600 dark:text-cyan-400 mt-2">Rp3.500.000</div>
+                       </div>
+                       <div className="p-3 bg-violet-500/10 rounded-xl text-violet-500">
+                         <Wallet size={24} />
+                       </div>
+                     </div>
+                     <button onClick={() => setActiveTab('wallet')} className="text-[10px] text-[#a855f7] font-black uppercase text-left hover:underline">CEK DOMPET DIGITAL {">"}</button>
+                  </div>
                 </div>
+              )}
 
-                <div className="xl:col-span-1 p-6 rounded-3xl bg-white dark:bg-black/25 border border-indigo-100/10 flex flex-col justify-between min-h-[350px] h-auto overflow-hidden max-w-full">
-                  <h4 className="text-xs uppercase tracking-widest font-mono text-indigo-500 border-b border-indigo-100/10 pb-4 mb-2">{t('quickActions')}</h4>
-                  
-                  {userRole === 'Owner' ? (
-                    <div className="space-y-3">
-                      <div className="p-3.5 rounded-2xl bg-violet-600/15 border border-violet-500/20">
-                        <span className="text-[10px] font-black uppercase block opacity-60 mb-2">{t('salaryFeature')}</span>
-                        <button 
-                          onClick={handlePaySalary}
-                          disabled={isSalaryPaid}
-                          className="w-full py-2.5 bg-violet-600 text-white rounded-xl text-xs font-black uppercase hover:bg-violet-700 transition"
-                        >
-                          {isSalaryPaid ? '✅ GAJI TELAH DITRANSFER' : t('paySalary')}
-                        </button>
-                      </div>
-
-                      <div className="flex gap-2">
-                        <button onClick={() => setActiveTab('kasir')} className="flex-1 py-3 bg-slate-900 text-white dark:bg-white/10 rounded-xl text-xs font-black uppercase text-center hover:brightness-110 transition">{t('addTransaction')}</button>
-                        <button onClick={handleGenerateAttendanceCode} className="flex-1 py-3 bg-slate-900 text-white dark:bg-white/10 rounded-xl text-xs font-black uppercase text-center hover:brightness-110 transition">{t('genAttendance')}</button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      <div className="p-4 rounded-2xl bg-cyan-500/5 border border-cyan-500/20 text-center">
-                        <Crown className="text-amber-400 mx-auto mb-2" size={24} />
-                        <h5 className="text-xs font-black uppercase tracking-wider">{getEmployeeTier(employeeProfile.exp).name}</h5>
-                        <p className="text-[10px] opacity-60">Score EXP: {employeeProfile.exp}pts</p>
-                      </div>
-                      <button onClick={() => setActiveTab('absensi')} className="w-full py-3 bg-violet-600 text-white rounded-xl text-xs font-black uppercase hover:bg-violet-700 transition">{t('checkInAbsen')}</button>
-                    </div>
-                  )}
-
-                  <p className="text-[9px] font-mono opacity-50 mt-4 text-center">InMarket Platform v2.5 Sandbox Instance</p>
-                </div>
-
-              </div>
+              <p className="text-[9px] font-mono opacity-50 mt-4 text-center">InMarket Platform v2.5 Sandbox Instance</p>
 
               {/* ================================================= */}
               {/* STARTUP AI PREMIUM MODULES - BENTO SUITE */}
@@ -2408,6 +2644,24 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
                           <Download className="w-3.5 h-3.5 text-slate-500 group-hover:text-emerald-400 transition" />
                         </button>
                       ))}
+
+                      <div className="pt-2 border-t border-slate-500/10 mt-2">
+                        <button
+                          onClick={() => handleExportToGoogleDocs('laporan_usaha')}
+                          className="w-full p-3 rounded-2xl bg-violet-600/10 dark:bg-violet-900/20 border border-violet-500/30 hover:border-violet-500 text-left transition flex items-center justify-between group cursor-pointer shadow-lg shadow-violet-500/5"
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className="w-8 h-8 rounded-xl bg-violet-950/40 border border-violet-500/40 flex items-center justify-center text-violet-400">
+                              <FileText className="w-4 h-4" />
+                            </div>
+                            <div>
+                              <span className="text-xs font-black text-violet-700 dark:text-violet-300 block uppercase leading-tight">Export to Google Docs</span>
+                              <span className="text-[9px] font-mono text-violet-400 opacity-80 uppercase">AI-Dynamic Cloud Document</span>
+                            </div>
+                          </div>
+                          <Sparkles className="w-3.5 h-3.5 text-violet-400 animate-pulse" />
+                        </button>
+                      </div>
                     </div>
                   </div>
 
@@ -2605,7 +2859,7 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
                   </div>
                   <div>
                     <h3 className="text-xl font-black">{t('attendanceCode')}</h3>
-                    <p className="text-xs opacity-60 mt-1">Generate kode absensi agar staf karyawan Anda dapat check-in via swafoto.</p>
+                    <p className="text-xs opacity-60 mt-1">Generate kode absensi harian agar karyawan dapat melakukan check-in kehadiran.</p>
                   </div>
 
                   <div className="text-4xl font-extrabold tracking-widest bg-clip-text text-transparent bg-gradient-to-r from-[#22d3ee] via-[#a855f7] to-[#ec4899] py-4 bg-slate-900/10 dark:bg-black/30 rounded-2xl max-w-xs mx-auto border border-dashed border-indigo-500/20 font-mono">
@@ -2614,10 +2868,48 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
 
                   <button 
                     onClick={handleGenerateAttendanceCode}
-                    className="px-6 py-3 bg-violet-600 hover:bg-violet-700 text-white font-black text-xs tracking-widest uppercase rounded-xl transition cursor-pointer"
+                    className="px-6 py-3 bg-violet-600 hover:bg-violet-700 text-white font-black text-xs tracking-widest uppercase rounded-xl transition cursor-pointer mb-6"
                   >
                     🔄 {t('generateCode')}
                   </button>
+
+                  <div className="mt-8 text-left border-t border-slate-200 dark:border-white/10 pt-6">
+                    <h4 className="text-sm font-black text-slate-800 dark:text-white mb-4 uppercase tracking-widest flex items-center gap-2">
+                       <CheckCircle size={16} className="text-emerald-500" />
+                       Riwayat Check-In Hari Ini
+                    </h4>
+                    <div className="overflow-hidden rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-black/20">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-100 dark:bg-white/5 font-mono text-[10px] uppercase text-slate-500 dark:text-slate-400">
+                          <tr>
+                            <th className="px-4 py-3">Staf / Email</th>
+                            <th className="px-4 py-3">Waktu</th>
+                            <th className="px-4 py-3">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-200 dark:divide-white/5">
+                          {attendances.length > 0 ? attendances.map((att, i) => (
+                            <tr key={att.id || i} className="hover:bg-slate-100 dark:hover:bg-white/5 transition">
+                              <td className="px-4 py-3">
+                                <div className="font-semibold text-slate-700 dark:text-slate-200">{att.employeeName}</div>
+                                <div className="text-[10px] text-slate-500">{att.employeeEmail || '-'}</div>
+                              </td>
+                              <td className="px-4 py-3 text-slate-500 font-mono text-[11px]">{att.date} {att.time && `· ${att.time}`}</td>
+                              <td className="px-4 py-3">
+                                <span className={cn("px-2 py-1 rounded-md text-[9px] font-bold border", att.status === 'Tepat Waktu' ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/20" : "bg-orange-500/10 text-orange-500 border-orange-500/20")}>
+                                  {att.status || 'Hadir'}
+                                </span>
+                              </td>
+                            </tr>
+                          )) : (
+                            <tr>
+                              <td colSpan={3} className="px-4 py-6 text-center text-slate-400 font-mono text-[10px]">Belum ada riwayat hari ini.</td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
                 </div>
               ) : (
                 // Employee inputs code
@@ -2627,7 +2919,7 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
                       <Users size={28} className="animate-pulse" />
                     </div>
                     <h3 className="text-lg font-black">{t('inputAttendanceCode')}</h3>
-                    <p className="text-xs opacity-60 mt-1">Harap input kode 6-digit yang diactivekan oleh Pemilik Toko Anda.</p>
+                    <p className="text-xs opacity-60 mt-1">Masukkan kode absen 6-digit yang diberikan Pemilik Toko / Outlet.</p>
                   </div>
 
                   {attendanceSuccess && (
@@ -2636,7 +2928,16 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
                       animate={{ scale: 1, opacity: 1 }} 
                       className="p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl text-center text-xs font-black text-emerald-400 flex items-center justify-center gap-2"
                     >
-                      <CheckCircle size={16} /> {t('checkInSuccess')}
+                      <CheckCircle size={16} /> Check-In Berhasil! (+25 EXP)
+                    </motion.div>
+                  )}
+                  {attendanceError && (
+                    <motion.div 
+                      initial={{ scale: 0.95, opacity: 0 }} 
+                      animate={{ scale: 1, opacity: 1 }} 
+                      className="p-4 bg-rose-500/10 border border-rose-500/30 rounded-2xl text-center text-xs font-black text-rose-400 flex items-center justify-center gap-2"
+                    >
+                      {attendanceError}
                     </motion.div>
                   )}
 
@@ -2645,17 +2946,17 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
                       required 
                       type="text" 
                       value={employeeInputCode}
-                      onChange={e => setEmployeeInputCode(e.target.value)}
+                      onChange={e => setEmployeeInputCode(e.target.value.toUpperCase())}
                       placeholder="CONTOH: PLX487" 
-                      className="w-full p-4 bg-black/5 dark:bg-white/5 border border-indigo-100/10 rounded-2xl text-center font-mono font-black text-lg tracking-widest outline-none focus:border-cyan-400" 
+                      className="w-full p-4 bg-black/5 dark:bg-white/5 border border-indigo-100/10 rounded-2xl text-center font-mono font-black text-lg tracking-widest outline-none focus:border-cyan-400 uppercase" 
                     />
                   </div>
 
                   <div className="space-y-2">
-                    <label className="text-[10px] font-black uppercase opacity-60 tracking-wider flex items-center gap-2"><Image size={14} /> {t('uploadWorkProof')}</label>
+                    <label className="text-[10px] font-black uppercase opacity-60 tracking-wider flex items-center gap-2"><Image size={14} /> Bukti Foto (Opsional)</label>
                     <input 
                       type="text" 
-                      placeholder="https://images.unsplash.com/... (Selfie URL)" 
+                      placeholder="Masukkan URL Link Foto Selfie Anda (Cth: imgbb/imgur)" 
                       value={attendanceProofUrl}
                       onChange={e => setAttendanceProofUrl(e.target.value)}
                       className="w-full p-3.5 bg-black/5 dark:bg-white/5 border border-indigo-100/10 rounded-xl text-xs font-bold outline-none" 
@@ -2677,24 +2978,27 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
           {/* TAB 5: ADVANCED RECHARTS GROUP */}
           {activeTab === 'grafik' && userRole === 'Owner' && (
             <div className="space-y-6">
-              <h3 className="text-sm font-black uppercase tracking-widest text-indigo-500 mb-2">Modern Ledger Accounting</h3>
+              <h3 className="text-sm font-black uppercase tracking-widest text-[#a855f7] mb-2 flex items-center gap-2">
+                <TrendingUp size={18} /> {language === 'id' ? 'ANALISIS PROFITABILITAS & LEDGER' : 'PROFITABILITY & LEDGER ANALYSIS'}
+              </h3>
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 
-                <div className="p-6 rounded-3xl bg-white dark:bg-black/25 border border-indigo-100/10 h-76">
-                  <span className="text-[10px] uppercase font-mono opacity-50 block mb-4">REVENUE VELOCITY TREND (NET)</span>
-                  <div className="w-full min-h-[300px]">
+                {/* Bar Chart Section */}
+                <div className="p-6 rounded-3xl bg-white dark:bg-black/25 border border-indigo-100/10 min-h-[350px]">
+                  <span className="text-[10px] uppercase font-mono opacity-50 block mb-4 tracking-widest text-violet-400">REVENUE VELOCITY TREND (NET)</span>
+                  <div className="w-full h-[300px]">
                       {financeStats.empty ? (
-                        <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500">
+                        <div className="flex flex-col items-center justify-center text-slate-500 h-full">
                            <TrendingUp size={32} className="mb-4 opacity-20" />
                            <p className="text-xs font-bold opacity-50">Belum ada transaksi</p>
                         </div>
                       ) : (
-                        <ResponsiveContainer width="100%" height={300}>
+                        <ResponsiveContainer width="100%" height="100%">
                           <BarChart data={financeStats.chartData}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#a855f710" />
-                            <XAxis dataKey="name" stroke="#6b7280" fontSize={10} axisLine={false} />
-                            <YAxis stroke="#6b7280" fontSize={10} axisLine={false} />
+                            <CartesianGrid strokeDasharray="3 3" stroke="#a855f710" vertical={false} />
+                            <XAxis dataKey="name" stroke="#6b7280" fontSize={10} axisLine={false} tickLine={false} />
+                            <YAxis stroke="#6b7280" fontSize={10} axisLine={false} tickLine={false} />
                             <Tooltip contentStyle={{ backgroundColor: '#090514', border: '1px solid #c084fc', borderRadius: '12px' }} />
                             <Bar name="Sales/Revenue" dataKey="sales" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
                             <Bar name="Expenses/Loss" dataKey="expenses" fill="#f43f5e" radius={[4, 4, 0, 0]} />
@@ -2704,20 +3008,21 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
                   </div>
                 </div>
 
-                <div className="p-6 rounded-3xl bg-white dark:bg-black/25 border border-indigo-100/10 h-76">
-                  <span className="text-[10px] uppercase font-mono opacity-50 block mb-4">RECURRING PROFIT MULTIPLES</span>
-                  <div className="w-full min-h-[300px]">
+                {/* Line Chart Section */}
+                <div className="p-6 rounded-3xl bg-white dark:bg-black/25 border border-indigo-100/10 min-h-[350px]">
+                  <span className="text-[10px] uppercase font-mono opacity-50 block mb-4 tracking-widest text-cyan-400">RECURRING PROFIT MULTIPLES</span>
+                  <div className="w-full h-[300px]">
                     {financeStats.empty ? (
-                        <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500">
+                        <div className="flex flex-col items-center justify-center text-slate-500 h-full">
                            <TrendingUp size={32} className="mb-4 opacity-20" />
                            <p className="text-xs font-bold opacity-50">Belum ada transaksi</p>
                         </div>
                       ) : (
-                        <ResponsiveContainer width="100%" height={300}>
+                        <ResponsiveContainer width="100%" height="100%">
                           <LineChart data={financeStats.chartData}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#a855f710" />
-                            <XAxis dataKey="name" stroke="#6b7280" fontSize={10} axisLine={false} />
-                            <YAxis stroke="#6b7280" fontSize={10} axisLine={false} />
+                            <CartesianGrid strokeDasharray="3 3" stroke="#a855f710" vertical={false} />
+                            <XAxis dataKey="name" stroke="#6b7280" fontSize={10} axisLine={false} tickLine={false} />
+                            <YAxis stroke="#6b7280" fontSize={10} axisLine={false} tickLine={false} />
                             <Tooltip contentStyle={{ backgroundColor: '#090514', border: '1px solid #c084fc', borderRadius: '12px' }} />
                             <Line name="Sales/Revenue" type="monotone" dataKey="sales" stroke="#22d3ee" strokeWidth={3} dot={{ fill: '#22d3ee', strokeWidth: 0 }} />
                             <Line name="Expenses/Loss" type="monotone" dataKey="expenses" stroke="#f43f5e" strokeWidth={3} dot={{ fill: '#f43f5e', strokeWidth: 0 }} />
@@ -2727,6 +3032,68 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
                   </div>
                 </div>
 
+              </div>
+
+              {/* TABLE INTEGRATION */}
+              <div className="p-6 rounded-3xl bg-white dark:bg-black/30 border border-violet-500/10 overflow-hidden shadow-2xl">
+                <div className="flex items-center justify-between mb-6">
+                  <h4 className="text-xs font-black uppercase tracking-widest text-[#22d3ee] flex items-center gap-2">
+                    <LayoutDashboard size={16} /> {language === 'id' ? 'TABULASI DATA KEUANGAN' : 'FINANCIAL DATA TABULATION'}
+                  </h4>
+                  <span className="text-[9px] font-mono bg-violet-600/20 text-violet-400 px-3 py-1 rounded-full border border-violet-500/20">
+                    REALTIME_SYNC_2026
+                  </span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse min-w-[600px]">
+                    <thead>
+                      <tr className="border-b border-violet-500/10 text-[10px] font-black uppercase tracking-tighter text-slate-500 dark:text-violet-400 text-center sm:text-left">
+                        <th className="py-4 px-2">Waktu / Sesi</th>
+                        <th className="py-4 px-2">Pemasukan (Revenue)</th>
+                        <th className="py-4 px-2">Pengeluaran (Expense)</th>
+                        <th className="py-4 px-2">Laba Bersih Sesi</th>
+                        <th className="py-4 px-2 text-right">Status Ledger</th>
+                      </tr>
+                    </thead>
+                    <tbody className="text-xs font-medium">
+                      {(financeStats.empty || financeStats.chartData.length === 0) ? (
+                        <tr className="border-b border-violet-500/5 hover:bg-violet-500/5 transition-colors group">
+                          <td className="py-4 px-2 font-mono text-slate-400">00:00</td>
+                          <td className="py-4 px-2 text-emerald-500 font-bold">Rp0</td>
+                          <td className="py-4 px-2 text-rose-500 font-bold">Rp0</td>
+                          <td className="py-4 px-2 text-indigo-400 font-black">Rp0</td>
+                          <td className="py-4 px-2 text-right">
+                             <span className="px-2 py-0.5 rounded-lg bg-slate-500/10 text-slate-500 text-[8px] font-black uppercase tracking-widest">DEPLEATED_0</span>
+                          </td>
+                        </tr>
+                      ) : (
+                        financeStats.chartData.map((row: any, idx: number) => {
+                          const netRow = row.sales - row.expenses;
+                          return (
+                            <tr key={idx} className="border-b border-violet-500/5 hover:bg-violet-500/5 transition-colors group">
+                              <td className="py-4 px-2 font-black font-mono text-slate-700 dark:text-violet-200">{row.name}</td>
+                              <td className="py-4 px-2 text-emerald-600 dark:text-emerald-400 font-black">Rp{row.sales.toLocaleString()}</td>
+                              <td className="py-4 px-2 text-rose-600 dark:text-rose-400 font-bold">Rp{row.expenses.toLocaleString()}</td>
+                              <td className={cn("py-4 px-2 font-black", netRow < 0 ? "text-rose-500" : "text-cyan-500")}>
+                                Rp{netRow.toLocaleString()}
+                              </td>
+                              <td className="py-4 px-2 text-right">
+                                <span className={cn(
+                                  "px-2 py-0.5 rounded-lg text-[8px] font-black uppercase tracking-widest border",
+                                  netRow < 0 
+                                    ? "bg-rose-500/10 text-rose-500 border-rose-500/20" 
+                                    : "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                                )}>
+                                  {netRow < 0 ? 'NEGATIVE_MARGIN' : 'REVENUE_ACTIVE'}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
           )}
@@ -3224,234 +3591,7 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
             </div>
           )}
 
-          {/* TAB 7: HOLOGRAPHIC AI PLANNER & INMARKET VOICE AI ENGINE */}
-          {activeTab === 'ai' && (
-            <div className="max-w-5xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-              
-              {/* LEFT CARD: INMARKET VOICE AI PANEL WITH NEON SPACE ORB */}
-              <div id="voice-ai-hud" className="lg:col-span-6 holo-card p-6 flex flex-col items-center justify-between text-center relative overflow-hidden bg-gradient-to-b from-[#160d33]/60 via-[#0a051c]/80 to-[#030109] border border-violet-500/20 shadow-2xl min-h-[500px]">
-                {/* Visual decoration overlay */}
-                <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(139,92,246,0.1)_0%,transparent_70%)] pointer-events-none" />
-                <div className="absolute top-4 left-4 flex items-center gap-1.5 font-mono text-[9px] text-[#22d3ee]/60 border border-[#22d3ee]/20 px-2.5 py-1 rounded-full bg-slate-950/40 z-10 select-none">
-                  <span className={cn("w-1.5 h-1.5 rounded-full", isListening ? "bg-[#34d399] animate-ping" : "bg-[#22d3ee]")} />
-                  <span>VOICE NODE CH-08: ACTIVE</span>
-                </div>
 
-                <div className="absolute top-4 right-4 text-right font-mono text-[9px] text-violet-400/60 leading-tight">
-                  <span className="block">UTC 2026 AUDIO GATE</span>
-                  <span className="block opacity-60">TENANT SECURE MODE</span>
-                </div>
-
-                {/* Main section: The Cosmic Orb visual design */}
-                <div className="flex-1 flex flex-col items-center justify-center w-full py-6 space-y-6">
-                  <div>
-                    <h3 className="text-sm font-black tracking-widest text-[#22d3ee] uppercase font-sans">
-                      {language === 'id' ? 'INMARKET VOICE AI' : 'INMARKET VOICE AI'}
-                    </h3>
-                    <p className="text-[10px] font-semibold text-slate-400 max-w-xs mt-1 leading-snug">
-                      {language === 'id' 
-                        ? 'Berbicara dengan Asisten AI Anda dalam real-time untuk laporan instan operasional harian.' 
-                        : 'Communicate with your AI Assistant in real-time for instant cashier and stock operational reports.'}
-                    </p>
-                  </div>
-
-                  {/* AI ORB DESIGN */}
-                  <div className="relative w-40 h-40 flex items-center justify-center">
-                    {/* Ring aura exterior */}
-                    <motion.div 
-                      animate={{ rotate: isListening || isVoiceSpeaking ? 360 : 0 }}
-                      transition={{ repeat: Infinity, duration: 8, ease: "linear" }}
-                      className={cn(
-                        "absolute inset-0 rounded-full border-2 border-dashed transition-colors duration-500",
-                        isListening 
-                          ? "border-[#34d399]/40" 
-                          : isVoiceSpeaking 
-                            ? "border-violet-500/40" 
-                            : "border-slate-700/30"
-                      )}
-                    />
-                    
-                    {/* Pulsating shadow backing indicator */}
-                    <motion.div 
-                      animate={{ scale: isListening || isVoiceSpeaking ? [0.95, 1.15, 0.95] : 1 }}
-                      transition={{ repeat: Infinity, duration: 2, ease: "easeInOut" }}
-                      className={cn(
-                        "absolute w-32 h-32 rounded-full blur-xl opacity-30 transition-all duration-500",
-                        isListening 
-                          ? "bg-[#34d399]/60 shadow-[0_0_35px_#34d399]" 
-                          : isVoiceSpeaking 
-                            ? "bg-violet-500/60 shadow-[0_0_35px_#8b5cf6]" 
-                            : "bg-[#22d3ee]/20"
-                      )}
-                    />
-
-                    {/* Sphere Orb */}
-                    <div className={cn(
-                      "relative w-28 h-28 rounded-full flex flex-col items-center justify-center transition-all duration-500 z-10 cursor-pointer overflow-hidden",
-                      isListening 
-                        ? "bg-[#102a1e]/80 border-2 border-[#34d399] shadow-[0_0_20px_rgba(52,211,153,0.3)]" 
-                        : isVoiceSpeaking 
-                          ? "bg-[#1d123d]/80 border-2 border-violet-400 shadow-[0_0_20px_rgba(139,92,246,0.3)]" 
-                          : "bg-slate-900/90 border border-white/10 hover:border-violet-400/50 shadow-inner"
-                    )}
-                    onClick={handleToggleVoiceReg}
-                    >
-                      {/* Interactive pulsing lines inside */}
-                      <Volume2 className={cn(
-                        "w-7 h-7 transition-all duration-300",
-                        isListening 
-                          ? "text-[#34d399] scale-110" 
-                          : isVoiceSpeaking 
-                            ? "text-violet-400 scale-110 animate-pulse" 
-                            : "text-slate-400"
-                      )} />
-                      
-                      <div className="text-[8px] font-mono font-bold tracking-widest mt-1.5 uppercase opacity-80">
-                        {isListening 
-                          ? 'REC ACTIVE' 
-                          : isVoiceSpeaking 
-                            ? 'AI SPEAKING' 
-                            : 'TAP TO SPEAK'}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Sound Wave Animation Visualizer */}
-                  <div className="flex items-end justify-center gap-1.5 h-10 w-full max-w-[220px]">
-                    {waveformHeight.map((h, i) => (
-                      <motion.div
-                        key={i}
-                        animate={{ height: isListening || isVoiceSpeaking ? h : 5 }}
-                        transition={{ type: 'spring', stiffness: 350, damping: 12 }}
-                        className={cn(
-                          "w-1.5 rounded-full transition-all duration-500",
-                          isListening 
-                            ? "bg-gradient-to-t from-emerald-600 via-teal-500 to-[#34d399] shadow-[0_0_6px_rgba(52,211,153,0.4)]" 
-                            : "bg-gradient-to-t from-violet-600 via-indigo-500 to-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.4)]"
-                        )}
-                      />
-                    ))}
-                  </div>
-
-                  {/* Printed Realtime transcript feed */}
-                  <div className="w-full bg-slate-950/50 border border-white/5 p-3 rounded-2xl min-h-[44px] flex items-center justify-center text-[11px] font-medium leading-relaxed max-w-sm px-4">
-                    {isListening ? (
-                      <span className="text-[#34d399] font-mono tracking-widest animate-pulse">📢 LISTENING TO YOUR VOICE IN REAL-TIME...</span>
-                    ) : isVoiceSpeaking ? (
-                      <span className="text-violet-300 italic">“ {voiceTranscript.slice(0, 110)}{voiceTranscript.length > 110 ? '...' : ''} ”</span>
-                    ) : (
-                      <span className="text-slate-400 opacity-60 italic">{language === 'id' ? 'Menunggu suara masuk atau pilihan pertanyaan...' : 'Awaiting voice inputs or selected queries...'}</span>
-                    )}
-                  </div>
-                </div>
-
-                {/* BOTTOM PRESETS LIST: Karyawan dapat bertanya panel */}
-                <div className="w-full border-t border-violet-500/10 pt-4 pb-2 z-10 text-left">
-                  <div className="text-[9px] font-black tracking-widest font-mono text-cyan-400 uppercase mb-2 flex items-center gap-1">
-                    <CheckSquare size={10} />
-                    {language === 'id' ? 'PRESET PERTANYAAN OPERASIONAL SUARA' : 'STAFF VOICE QUICK QUESTIONS'}
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px] font-mono">
-                    <button 
-                      onClick={() => processVoiceAIQuery('Jadwal saya hari ini?')} 
-                      className="p-2 text-left rounded-xl bg-violet-600/5 hover:bg-violet-600/15 border border-violet-500/15 hover:border-violet-500/30 text-violet-200 transition flex items-center gap-2 truncate"
-                    >
-                      <span className="inline-block w-1.5 h-1.5 bg-violet-400 rounded-full" />
-                      <span>{language === 'id' ? '“Jadwal saya hari ini?”' : '“My schedule today?”'}</span>
-                    </button>
-                    <button 
-                      onClick={() => processVoiceAIQuery('Apakah stock barang hampir habis?')} 
-                      className="p-2 text-left rounded-xl bg-violet-600/5 hover:bg-violet-600/15 border border-violet-500/15 hover:border-violet-500/30 text-violet-200 transition flex items-center gap-2 truncate"
-                    >
-                      <span className="inline-block w-1.5 h-1.5 bg-cyan-400 rounded-full" />
-                      <span>{language === 'id' ? '“Stock hampir habis?”' : '“Any low stock products?”'}</span>
-                    </button>
-                    <button 
-                      onClick={() => processVoiceAIQuery('Ada tugas baru hari ini?')} 
-                      className="p-2 text-left rounded-xl bg-violet-600/5 hover:bg-violet-600/15 border border-violet-500/15 hover:border-violet-500/30 text-violet-200 transition flex items-center gap-2 truncate"
-                    >
-                      <span className="inline-block w-1.5 h-1.5 bg-emerald-400 rounded-full" />
-                      <span>{language === 'id' ? '“Ada tugas harian baru?”' : '“Any new assignments?”'}</span>
-                    </button>
-                    <button 
-                      onClick={() => processVoiceAIQuery('Berapa ranking eksp saya?')} 
-                      className="p-2 text-left rounded-xl bg-violet-600/5 hover:bg-violet-600/15 border border-violet-500/15 hover:border-violet-500/30 text-violet-200 transition flex items-center gap-2 truncate"
-                    >
-                      <span className="inline-block w-1.5 h-1.5 bg-rose-400 rounded-full" />
-                      <span>{language === 'id' ? '“Berapa ranking saya?”' : '“What is my staff ranking?”'}</span>
-                    </button>
-                    <button 
-                      onClick={() => processVoiceAIQuery('Gaji saya sudah dibayar?')} 
-                      className="p-2 text-left rounded-xl bg-violet-600/5 hover:bg-violet-600/15 border border-violet-500/15 hover:border-violet-500/30 text-violet-200 transition flex items-center gap-2 col-span-full truncate"
-                    >
-                      <span className="inline-block w-1.5 h-1.5 bg-[#f59e0b] rounded-full" />
-                      <span>{language === 'id' ? '“Gaji saya bulan ini sudah dibayar?”' : '“Is my salary paid yet?”'}</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* RIGHT CARD: REALTIME DIALOGUE HISTORY AND GRAPHIC CO-PILOT */}
-              <div className="lg:col-span-6 holo-card p-6 flex flex-col justify-between bg-black/40 border border-violet-500/15 rounded-3xl h-full min-h-[500px] shadow-2xl relative overflow-hidden">
-                <div className="absolute top-[-30px] right-[-30px] w-24 h-24 bg-rose-500/5 rounded-full blur-xl animate-pulse pointer-events-none" />
-                
-                <div className="flex items-center justify-between border-b border-white/5 pb-3.5 mb-4 font-mono">
-                  <span className="text-xs font-black text-violet-300 uppercase tracking-widest">{language === 'id' ? 'RIWAYAT DIALOG AI CO-PILOT' : 'AI CO-PILOT LOG OVERVIEW'}</span>
-                  <span className="text-[9px] opacity-40">COMM_PORT: ON</span>
-                </div>
-
-                <div className="flex-1 overflow-y-auto space-y-4 pr-1 mb-4 custom-scrollbar max-h-[300px]">
-                  {aiChat.map((chat, index) => (
-                    <div 
-                      key={index} 
-                      className={cn(
-                        "p-4 rounded-2xl text-[11px] leading-relaxed max-w-full space-y-1.5 transition-all",
-                        chat.role === 'user' 
-                          ? "bg-violet-600/20 text-white border-l-4 border-violet-400 ml-6 animate-pulse" 
-                          : "bg-black/40 border border-violet-500/10 text-violet-100"
-                      )}
-                    >
-                      <div className="flex justify-between text-[8px] font-black tracking-widest font-mono text-cyan-400 uppercase">
-                        <span>{chat.role === 'user' ? 'USER QUERY COMMAND' : 'INMARKET PLATFORM BOT'}</span>
-                        <span className="opacity-50">2026.05</span>
-                      </div>
-                      <p className="font-semibold text-slate-100 leading-relaxed">{chat.text}</p>
-                    </div>
-                  ))}
-
-                  {aiTyping && (
-                    <div className="p-4 rounded-2xl bg-black/30 border border-violet-500/10 text-cyan-400 text-[10px] font-mono tracking-widest animate-pulse">
-                      ⚡ AI SYSTEM PROCESSING QUERY FOR {userRole.toUpperCase()}...
-                    </div>
-                  )}
-                </div>
-
-                {/* Submitting text manual inquiries alternative */}
-                <form 
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    if (!aiInp.trim()) return;
-                    processVoiceAIQuery(aiInp);
-                    setAiInp('');
-                  }} 
-                  className="flex gap-2"
-                >
-                  <input 
-                    type="text" 
-                    value={aiInp}
-                    onChange={e => setAiInp(e.target.value)}
-                    placeholder={language === 'id' ? "Ketik alternatif kendala di sini..." : "Or type physical message alternative..."} 
-                    className="flex-1 p-3.5 bg-black/40 border border-violet-500/25 rounded-xl text-xs font-bold outline-none text-violet-100 placeholder-violet-400/30" 
-                  />
-                  <button type="submit" className="px-4.5 bg-gradient-to-r from-[#22d3ee] to-violet-600 hover:brightness-110 text-slate-950 hover:text-white rounded-xl transition cursor-pointer font-black text-xs uppercase tracking-wider flex items-center justify-center gap-1.5">
-                    <Send size={13} />
-                    <span>{language==='id'?'KIRIM':'SEND'}</span>
-                  </button>
-                </form>
-              </div>
-
-            </div>
-          )}
 
         </div>
       </main>
@@ -4211,7 +4351,7 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
                   onClick={() => { playClickSound(); setShowQuickFAB(false); setActiveTab('absensi'); }}
                   className="w-full text-left py-1 px-2 hover:bg-slate-500/10 rounded-lg text-xs font-semibold text-slate-200 hover:text-violet-400 transition"
                 >
-                  📷 Swafoto CheckIn
+                  📷 Check In Absensi
                 </button>
               )}
             </motion.div>
@@ -4228,49 +4368,91 @@ export default function DashboardPage({ currentView: initialView, onNavigate }: 
       </div>
 
 
-      {showQrisPayment && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <motion.div 
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.95 }}
-            className="bg-white dark:bg-[#0b0816] rounded-2xl p-6 sm:p-8 w-full max-w-sm shadow-2xl border border-indigo-500/20 text-center"
-          >
-            <h3 className="text-xl font-black mb-2 text-slate-800 dark:text-white uppercase tracking-wider">Pay via QRIS</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mb-6">Scan QR code using your e-wallet or banking app</p>
-            
-            <div className="bg-white p-4 rounded-xl inline-block shadow-sm mb-6 border border-slate-100 dark:border-white/10">
-              <img 
-                src={`https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=QRIS_DEMO_${qrisAmount}_${Date.now()}`} 
-                alt="QRIS Payment"
-                className="w-48 h-48 sm:w-56 sm:h-56 object-contain mix-blend-multiply"
-              />
-            </div>
-            
-            <div className="font-mono text-2xl font-black text-cyan-600 dark:text-cyan-400 mb-8 bg-cyan-50 dark:bg-cyan-900/20 py-3 rounded-lg border border-cyan-100 dark:border-cyan-500/20">
-              Rp{qrisAmount.toLocaleString()}
-            </div>
-            
-            <div className="flex space-x-3">
-              <button 
-                onClick={() => setShowQrisPayment(false)}
-                className="flex-1 py-3 text-xs font-bold text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 dark:bg-white/5 bg-slate-100 rounded-xl transition cursor-pointer"
-              >
-                BATAL
-              </button>
-              <button 
-                onClick={() => {
-                  setShowQrisPayment(false);
-                  executeCheckout();
-                }}
-                className="flex-1 py-3 text-xs font-bold text-white bg-gradient-to-r from-violet-600 to-indigo-600 hover:scale-[1.02] active:scale-[0.98] rounded-xl transition shadow-lg shadow-violet-500/30 cursor-pointer"
-              >
-                KONFIRMASI
-              </button>
-            </div>
-          </motion.div>
-        </div>
-      )}
+
+      {/* AI Assistant Overlay Modal */}
+      <AnimatePresence>
+        {isAiFloatingOpen && (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsAiFloatingOpen(false)}
+              className="absolute inset-0 bg-black/85 backdrop-blur-xl"
+            />
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              className="relative w-full max-w-2xl max-h-[85vh] overflow-hidden"
+            >
+              <div className="absolute top-4 right-4 z-50">
+                <button 
+                  onClick={() => setIsAiFloatingOpen(false)}
+                  className="p-3 bg-white/5 border border-white/10 rounded-full text-white hover:bg-white/10 transition cursor-pointer"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              
+              <div className="bg-[#0c091f] border border-violet-500/20 rounded-[2.5rem] shadow-2xl overflow-hidden p-6 md:p-8 flex flex-col h-full">
+                 <div className="flex items-center gap-3 mb-6">
+                    <div className="p-3 bg-violet-600/20 rounded-2xl text-violet-400">
+                      <Bot size={28} />
+                    </div>
+                    <div>
+                      <h2 className="text-xl font-black text-white uppercase tracking-widest">AI CO-PILOT</h2>
+                      <p className="text-[10px] text-slate-400 font-mono tracking-widest">INTERFACE_2026_ACTIVE</p>
+                    </div>
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto space-y-4 pr-1 mb-4 custom-scrollbar">
+                      <div className="mb-4">
+                        <div className="text-[9px] font-black tracking-widest font-mono text-cyan-400 uppercase mb-2 flex items-center gap-1">
+                          <CheckSquare size={10} />
+                          {language === 'id' ? 'PRESET PERTANYAAN AI' : 'AI QUICK QUESTIONS'}
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px] font-mono">
+                          <button 
+                            onClick={() => processVoiceAIQuery('Apakah stock barang hampir habis?')} 
+                            className="p-2 text-left rounded-xl bg-violet-600/5 hover:bg-violet-600/15 border border-violet-500/15 hover:border-violet-500/30 text-violet-200 transition flex items-center gap-2 truncate"
+                          >
+                            <span className="inline-block w-1.5 h-1.5 bg-cyan-400 rounded-full" />
+                            <span>{language === 'id' ? '“Cek stok habis?”' : '“Check low stock?”'}</span>
+                          </button>
+                          <button 
+                            onClick={() => processVoiceAIQuery('Berapa profit hari ini?')} 
+                            className="p-2 text-left rounded-xl bg-violet-600/5 hover:bg-violet-600/15 border border-violet-500/15 hover:border-violet-500/30 text-violet-200 transition flex items-center gap-2 truncate"
+                          >
+                            <span className="inline-block w-1.5 h-1.5 bg-emerald-400 rounded-full" />
+                            <span>{language === 'id' ? '“Profit hari ini?”' : '“Today profit?”'}</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {aiChat.map((chat, index) => (
+                        <div key={index} className={cn("p-4 rounded-2xl text-[11px] leading-relaxed border flex flex-col", chat.role === 'user' ? "bg-violet-600/20 text-white border-violet-400/30 ml-8" : "bg-black/40 border-violet-500/10 text-violet-100 mr-8")}>
+                          {chat.role === 'user' ? (
+                            <p className="font-semibold">{chat.text}</p>
+                          ) : (
+                            <div className="markdown-body">
+                              <Markdown rehypePlugins={[rehypeRaw]}>{chat.text}</Markdown>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                      {aiTyping && <div className="p-4 rounded-2xl bg-black/30 border border-violet-500/10 text-cyan-400 text-[10px] font-mono tracking-widest animate-pulse mr-8">⚡ PROCESSING...</div>}
+                  </div>
+
+                  <form onSubmit={(e) => { e.preventDefault(); if (aiInp.trim()){ processVoiceAIQuery(aiInp); setAiInp(''); } }} className="flex gap-2">
+                     <input value={aiInp} onChange={e=>setAiInp(e.target.value)} type="text" className="flex-1 p-3.5 bg-black/40 border border-violet-500/25 rounded-xl text-xs font-bold outline-none text-violet-100 placeholder-violet-400/30" placeholder="Ketik kendala harian..." />
+                     <button type="submit" className="p-3.5 bg-gradient-to-r from-[#22d3ee] to-violet-600 text-slate-950 rounded-xl"><Send size={16} /></button>
+                  </form>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
     </div>
   );

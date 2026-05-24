@@ -28,8 +28,21 @@ service cloud.firestore {
       return (val is number || val is int) && val >= 0;
     }
 
+    function isEmployee() {
+      return isSignedIn() && request.auth.token.role == 'Employee';
+    }
+
+    function isAdmin() {
+       return isSignedIn() && request.auth.token.admin == true;
+    }
+
     function isValidId(id) {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Global Validation Helpers
+    function validateInput(val, max) {
+      return val is string && val.size() <= max;
     }
 
     // 1. USERS: Only users can read & write their own account
@@ -42,22 +55,25 @@ service cloud.firestore {
       allow read: if isSignedIn() && resource.data.ownerId == request.auth.uid;
       allow create: if isSignedIn() && 
                     isOwner(request.resource.data.ownerId) &&
-                    validateString(request.resource.data.name) &&
+                    validateInput(request.resource.data.name, 500) &&
+                    !request.resource.data.name.matches('.*<script.*') &&
                     validatePositiveNumber(request.resource.data.price) &&
                     validateNonNegativeNumber(request.resource.data.stock);
       allow update: if isSignedIn() && 
                     isOwner(resource.data.ownerId) &&
                     isOwner(request.resource.data.ownerId) &&
-                    validateString(request.resource.data.name) &&
+                    validateInput(request.resource.data.name, 500) &&
+                    !request.resource.data.name.matches('.*<script.*') &&
                     validatePositiveNumber(request.resource.data.price) &&
-                    validateNonNegativeNumber(request.resource.data.stock);
+                    validateNonNegativeNumber(request.resource.data.stock) &&
+                    (request.time < resource.data.updatedAt + duration.value(1, 's')); 
       allow delete: if isSignedIn() && isOwner(resource.data.ownerId);
     }
 
     // 3. ACTIVITIES: Read by owner, write-only/create-only, write once, NO edit/delete
     match /activities/{activityId} {
       allow read: if isSignedIn() && resource.data.ownerId == request.auth.uid;
-      allow create: if isSignedIn() && isOwner(request.resource.data.ownerId);
+      allow create: if isSignedIn() && isOwner(request.resource.data.ownerId) && validateInput(request.resource.data.action, 500);
       allow update, delete: if false; 
     }
 
@@ -69,6 +85,30 @@ service cloud.firestore {
                     validatePositiveNumber(request.resource.data.total) &&
                     validatePositiveNumber(request.resource.data.quantity);
       allow update, delete: if isSignedIn() && isOwner(resource.data.ownerId);
+    }
+
+    // NEW: ATTENDANCE
+    match /attendance/{atId} {
+      allow read: if isSignedIn() && (isOwner(resource.data.ownerId) || request.auth.uid == resource.data.employeeId);
+      allow create: if isEmployee() && 
+                    request.resource.data.employeeEmail == request.auth.token.email &&
+                    request.resource.data.checkInTime is string &&
+                    request.resource.data.status in ['present', 'late', 'absent'];
+      allow update, delete: if false;
+    }
+
+    // NEW: SECURITY EVENTS (Append-only by server, read by owner)
+    match /securityEvents/{eventId} {
+      allow read: if isOwner(resource.data.ownerId);
+      allow create: if isAdmin();
+      allow update, delete: if false;
+    }
+
+    // NEW: SECURITY REPORTS
+    match /securityReports/{reportId} {
+      allow read: if isSignedIn() && isOwner(resource.data.ownerId);
+      allow create: if isAdmin();
+      allow update, delete: if false;
     }
 
     // 5. EXPENSES: Amount > 0, category required string

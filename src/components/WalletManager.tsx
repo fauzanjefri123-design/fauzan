@@ -10,6 +10,7 @@ import { useThemeLanguage } from '../context/ThemeLanguageContext';
 import { translations } from '../lib/translations';
 import { toast } from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
+import { cn } from '../lib/utils';
 import { 
   getWalletData, 
   updateWalletBalance
@@ -38,8 +39,9 @@ export default function WalletManager() {
   // Real-time partitioned keys by unique user account (email or uid)
   const getAccountKey = (baseKey: string) => {
     const userEmail = userData?.email || 'default_user';
+    const userRole = (userData?.role || 'Guest').toLowerCase().startsWith('own') ? 'own' : 'emp';
     const safeEmail = userEmail.replace(/[^a-zA-Z0-9]/g, '_');
-    return `${baseKey}_acc_${safeEmail}`;
+    return `${baseKey}_acc_${safeEmail}_${userRole}`;
   };
 
   const [balance, setBalance] = useState<number>(0);
@@ -80,7 +82,7 @@ export default function WalletManager() {
 
     // Set name value from profile
     if (userData) {
-      setAccountName(userData.name || userData.displayName || userData.email || '');
+      setAccountName((userData as any).name || (userData as any).displayName || userData.email || '');
     }
   }, [userData]);
 
@@ -308,6 +310,14 @@ export default function WalletManager() {
                   <div className="flex items-center gap-2 mb-1.5">
                     <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                     <h2 className="text-slate-400 text-xs font-black uppercase tracking-[0.2em]">{t('walletBalance')}</h2>
+                    <span className={cn(
+                      "px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest border",
+                      userData?.role?.toLowerCase().startsWith('own') 
+                        ? "bg-amber-500/10 border-amber-500/40 text-amber-400" 
+                        : "bg-cyan-500/10 border-cyan-500/40 text-cyan-400"
+                    )}>
+                      {userData?.role?.toLowerCase().startsWith('own') ? '👑 OWNER' : '👨‍💼 KARYAWAN'}
+                    </span>
                   </div>
                   <div className="flex items-baseline gap-2">
                     <span className="text-white/50 text-2xl font-bold">Rp</span>
@@ -322,12 +332,18 @@ export default function WalletManager() {
               </div>
 
               <div className="flex flex-wrap items-center gap-4">
-                <button 
-                  onClick={() => { playClickSound(); setShowTopUpForm(true); }}
-                  className="px-6 py-3.5 bg-gradient-to-r from-emerald-500 to-teal-600 hover:brightness-110 text-white rounded-2xl font-black text-xs uppercase tracking-wider flex items-center gap-2 shadow-[0_4px_20px_rgba(16,185,129,0.3)] hover:scale-[1.03] transition-transform cursor-pointer"
-                >
-                  <Plus size={16} /> {translations[language]?.topUpBalance || 'Isi Saldo'}
-                </button>
+                {userData?.role?.toLowerCase().startsWith('own') ? (
+                  <button 
+                    onClick={() => { playClickSound(); setShowTopUpForm(true); }}
+                    className="px-6 py-3.5 bg-gradient-to-r from-emerald-500 to-teal-600 hover:brightness-110 text-white rounded-2xl font-black text-xs uppercase tracking-wider flex items-center gap-2 shadow-[0_4px_20px_rgba(16,185,129,0.3)] hover:scale-[1.03] transition-transform cursor-pointer"
+                  >
+                    <Plus size={16} /> {translations[language]?.topUpBalance || 'Isi Saldo'}
+                  </button>
+                ) : (
+                  <div className="px-6 py-3.5 bg-white/5 border border-white/10 text-slate-500 rounded-2xl font-black text-xs uppercase tracking-wider flex items-center gap-2">
+                    <History size={16} /> SALDO DIKELOLA OWNER
+                  </div>
+                )}
                 <div className="flex gap-6 border-l border-white/10 pl-6">
                   <div>
                     <span className="text-slate-500 text-[9px] font-bold block uppercase mb-1">{t('incoming')}</span>

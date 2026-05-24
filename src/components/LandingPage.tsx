@@ -730,9 +730,14 @@ export default function LandingPage({ onNavigate }: { onNavigate: (view: any) =>
           <div className="space-y-4">
             <h5 className="font-extrabold text-[10px] tracking-widest uppercase opacity-40 font-mono font-sans">{language === 'id' ? 'INTEGRATOR DUKUNGAN' : 'SUPPORT INTEGRATOR'}</h5>
             <div className="flex gap-4 text-xs">
-              <div className="hover:text-violet-500 cursor-pointer p-2 bg-white/5 rounded-full hover:shadow-[0_0_12px_rgba(139,92,246,0.3)] transition-all">
+              <a 
+                href="https://www.instagram.com/onlyyzan_?igsh=cDBoeDBvaHZtYWY=" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="hover:text-violet-500 cursor-pointer p-2 bg-white/5 rounded-full hover:shadow-[0_0_12px_rgba(139,92,246,0.3)] transition-all"
+              >
                 <Instagram size={16} />
-              </div>
+              </a>
               <div className="hover:text-violet-500 cursor-pointer p-2 bg-white/5 rounded-full hover:shadow-[0_0_12px_rgba(139,92,246,0.3)] transition-all">
                 <MessageCircle size={16} />
               </div>

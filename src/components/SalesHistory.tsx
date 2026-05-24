@@ -65,6 +65,16 @@ export default function SalesHistory() {
   const t = (key: keyof typeof translations.id) => translations[language]?.[key] || key;
   
   // Real-time or fetch sales ledger
+  useEffect(() => {
+    const handleVoiceSearch = (e: any) => {
+      if (e.detail && e.detail.query) {
+        setSearchTerm(e.detail.query);
+      }
+    };
+    window.addEventListener('voice-search-transaction', handleVoiceSearch);
+    return () => window.removeEventListener('voice-search-transaction', handleVoiceSearch);
+  }, []);
+
   const fetchSales = async () => {
     setLoading(true);
     let firestoreSales: SaleRecord[] = [];

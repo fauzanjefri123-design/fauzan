@@ -123,8 +123,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             setUserData({ role: 'Guest', email: user.email || '' });
             localStorage.setItem('inmarket_user_role', 'Guest');
           }
-        } catch (error) {
-          console.error("Error fetching user data:", error);
+        } catch (error: any) {
+          const isOfflineError = error.message?.includes('offline') || error.code === 'unavailable';
+          if (!isOfflineError) {
+            console.error("Error fetching user data:", error);
+          } else {
+            console.warn("Firestore is offline, using fallback state if available");
+          }
+          
+          // Attempt offline fallback if Firestore is unreachable
+          const offlineUserStr = localStorage.getItem('offline_logged_in_user');
+          if (offlineUserStr) {
+            try {
+              const u = JSON.parse(offlineUserStr);
+              if (u.email === user.email || u.uid === user.uid) {
+                const mappedRole = u.role === 'Employee' || u.role === 'Karyawan' ? 'Employee' : (u.role === 'Guest' ? 'Guest' : 'Owner');
+                setUserData({
+                  role: mappedRole,
+                  email: u.email || user.email || '',
+                  businessId: u.businessId || 'bus_' + user.uid,
+                  ownerId: u.ownerId || user.uid,
+                });
+                localStorage.setItem('inmarket_user_role', mappedRole);
+                return;
+              }
+            } catch (e) {
+              console.warn("Offline user fallback failed", e);
+            }
+          }
+
           setUserData({ role: 'Guest', email: user.email || '' });
           localStorage.setItem('inmarket_user_role', 'Guest');
         }

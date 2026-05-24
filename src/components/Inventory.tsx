@@ -91,6 +91,32 @@ export default function Inventory() {
     fetchProducts();
   }, [auth.currentUser]);
 
+  useEffect(() => {
+    const handleVoiceAdd = (e: any) => {
+      setView('inventory');
+      setName(e.detail.name || '');
+      if (e.detail.price) setPrice(e.detail.price.toString());
+      if (e.detail.stock) setStock(e.detail.stock.toString());
+      if (e.detail.category) setCategory(e.detail.category);
+      setEditingProduct(null);
+      setIsAddingProduct(true);
+      setActiveFormTab('basic');
+    };
+    
+    const handleVoiceSearchTx = (e: any) => {
+      setView('sales');
+      // The search value itself will be passed to SalesHistory component which does its own listening,
+      // but we need to switch view to 'sales' first here.
+    };
+
+    window.addEventListener('voice-add-product', handleVoiceAdd);
+    window.addEventListener('voice-search-transaction', handleVoiceSearchTx);
+    return () => {
+      window.removeEventListener('voice-add-product', handleVoiceAdd);
+      window.removeEventListener('voice-search-transaction', handleVoiceSearchTx);
+    };
+  }, []);
+
   const showNotification = (type: 'success' | 'info' | 'error', message: string) => {
     setNotification({ type, message });
     setTimeout(() => setNotification(null), 4000);

@@ -236,3 +236,18 @@ export async function addLoginLog(userId: string, log: any) {
     handleFirestoreError(error, OperationType.CREATE, path);
   }
 }
+
+// ATTENDANCE INTERACTION
+export async function addAttendanceEntry(ownerId: string, attendance: any) {
+  const path = 'attendance';
+  try {
+    const docRef = await addDoc(collection(db, path), {
+      ...attendance,
+      ownerId,
+      timestamp: new Date().toISOString()
+    });
+    return docRef.id;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
