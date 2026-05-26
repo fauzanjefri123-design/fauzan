@@ -155,7 +155,7 @@ function ThemeAwareApp({
   hasBusiness: boolean;
   setHasBusiness: (val: boolean) => void;
 }) {
-  const { storeTheme } = useThemeLanguage();
+  const { storeTheme, language } = useThemeLanguage();
 
   const getThemeBGClass = () => {
     switch (storeTheme) {
@@ -174,7 +174,7 @@ function ThemeAwareApp({
   };
 
   return (
-    <div className={`min-h-screen ${getThemeBGClass()} relative overflow-hidden transition-all duration-700`}>
+    <div key={language} className={`min-h-screen ${getThemeBGClass()} relative overflow-hidden transition-all duration-700`}>
       {/* Ambient Mesh Gradients based on theme */}
       {storeTheme === 'cyber_neon' && (
         <>

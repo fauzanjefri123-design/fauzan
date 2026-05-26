@@ -124,12 +124,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             localStorage.setItem('inmarket_user_role', 'Guest');
           }
         } catch (error: any) {
-          const isOfflineError = error.message?.includes('offline') || error.code === 'unavailable';
-          if (!isOfflineError) {
-            console.error("Error fetching user data:", error);
-          } else {
-            console.warn("Firestore is offline, using fallback state if available");
-          }
+          console.error("Error fetching user data:", error);
           
           // Attempt offline fallback if Firestore is unreachable
           const offlineUserStr = localStorage.getItem('offline_logged_in_user');

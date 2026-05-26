@@ -115,23 +115,23 @@ export default function WalletManager() {
   // Form validations live triggers
   useEffect(() => {
     if (accountName) {
-      if (accountName.trim().length === 0) setAccountNameError('Nama akun wajib diisi');
-      else if (accountName.length > 50) setAccountNameError('Nama akun maksimal 50 karakter');
+      if (accountName.trim().length === 0) setAccountNameError(language === 'id' ? 'Nama akun wajib diisi' : 'Account name is required');
+      else if (accountName.length > 50) setAccountNameError(language === 'id' ? 'Nama akun maksimal 50 karakter' : 'Account name must be max 50 characters');
       else setAccountNameError(null);
     } else {
       setAccountNameError(null);
     }
-  }, [accountName]);
+  }, [accountName, language]);
 
   useEffect(() => {
     if (topUpAmount !== undefined) {
-      if (topUpAmount <= 0) setAmountError('Nominal top-up harus lebih besar dari Rp0');
-      else if (topUpAmount > 100000000) setAmountError('Maksimal top-up sekali transaksi adalah Rp100,000,000');
+      if (topUpAmount <= 0) setAmountError(language === 'id' ? 'Nominal top-up harus lebih besar dari Rp0' : 'Top-up amount must be greater than Rp0');
+      else if (topUpAmount > 100000000) setAmountError(language === 'id' ? 'Maksimal top-up sekali transaksi adalah Rp100,000,000' : 'Maximum top-up per transaction is Rp100,000,000');
       else setAmountError(null);
     } else {
       setAmountError(null);
     }
-  }, [topUpAmount]);
+  }, [topUpAmount, language]);
 
   useEffect(() => {
     if (paymentNumber) {
@@ -269,7 +269,7 @@ export default function WalletManager() {
       });
     } catch (err) {
       console.error(err);
-      toast.error('Gagal melakukan top-up ke cloud node wallet.');
+      toast.error(language === 'id' ? 'Gagal melakukan top-up ke cloud node wallet.' : 'Failed to top up to the cloud node wallet.');
     } finally {
       setLoading(false);
     }
@@ -341,7 +341,7 @@ export default function WalletManager() {
                   </button>
                 ) : (
                   <div className="px-6 py-3.5 bg-white/5 border border-white/10 text-slate-500 rounded-2xl font-black text-xs uppercase tracking-wider flex items-center gap-2">
-                    <History size={16} /> SALDO DIKELOLA OWNER
+                    <History size={16} /> {language === 'id' ? 'SALDO DIKELOLA OWNER' : 'BALANCE MANAGED BY OWNER'}
                   </div>
                 )}
                 <div className="flex gap-6 border-l border-white/10 pl-6">
@@ -370,20 +370,20 @@ export default function WalletManager() {
         <div className="bg-[#090615] border border-white/10 rounded-[2rem] p-6 flex flex-col justify-between relative overflow-hidden">
           <div className="space-y-4 relative z-10">
             <h3 className="text-xs font-black uppercase tracking-widest text-emerald-400 flex items-center gap-2">
-              <ShieldCheck size={16} /> LEDGER SECURED
+              <ShieldCheck size={16} /> {t('ledgerSecured')}
             </h3>
             <p className="text-[11px] text-slate-400 leading-relaxed font-semibold">
-              E-Wallet InMarket.id terproteksi enkripsi SSL end-to-end dengan multi-user ledger. Saldo akun terisolasi penuh, realtime, dan tidak dicampur dengan akun lain.
+              {t('walletSecureDesc')}
             </p>
           </div>
           <div className="grid grid-cols-2 gap-3 mt-6 relative z-10">
             <div className="p-3 bg-emerald-500/5 border border-emerald-500/10 rounded-2xl text-center">
-              <span className="text-[8px] text-emerald-400 font-black uppercase tracking-wider block mb-0.5">SSL NODE</span>
-              <span className="block text-[10px] font-bold text-emerald-400">Stable Online</span>
+              <span className="text-[8px] text-emerald-400 font-black uppercase tracking-wider block mb-0.5">{t('sslNode')}</span>
+              <span className="block text-[10px] font-bold text-emerald-400">{t('stableOnline')}</span>
             </div>
             <div className="p-3 bg-indigo-500/5 border border-indigo-500/10 rounded-2xl text-center">
-              <span className="text-[8px] text-indigo-400 font-black uppercase tracking-wider block mb-0.5">LEDGER ACC</span>
-              <span className="block text-[10px] font-bold text-indigo-400">Verified</span>
+              <span className="text-[8px] text-indigo-400 font-black uppercase tracking-wider block mb-0.5">{t('ledgerAcc')}</span>
+              <span className="block text-[10px] font-bold text-indigo-400">{t('verified')}</span>
             </div>
           </div>
         </div>
@@ -395,7 +395,7 @@ export default function WalletManager() {
         
         <div className="flex justify-between items-center mb-6">
           <h3 className="text-sm font-black uppercase tracking-widest flex items-center gap-2">
-            <History size={18} className="text-emerald-400" /> {language === 'id' ? 'Riwayat Transaksi Akun' : 'Account Transaction History'}
+            <History size={18} className="text-emerald-400" /> {t('txHistory')}
           </h3>
         </div>
 
@@ -468,9 +468,9 @@ export default function WalletManager() {
               <div className="p-8 pb-4 flex justify-between items-center border-b border-white/5">
                 <div>
                   <h3 className="text-white text-xl font-black uppercase tracking-widest flex items-center gap-2">
-                    <Plus className="text-emerald-400" size={24} /> {translations[language]?.topUpBalance || 'Top Up Saldo'}
+                    <Plus className="text-emerald-400" size={24} /> {t('topUpBalance')}
                   </h3>
-                  <p className="text-slate-400 text-[10px] font-bold uppercase tracking-wider mt-1">LEDGER ISOLATION ENDPOINT</p>
+                  <p className="text-slate-400 text-[10px] font-bold uppercase tracking-wider mt-1">{t('topUpSubtitle')}</p>
                 </div>
                 <button 
                   onClick={() => setShowTopUpForm(false)}
@@ -483,7 +483,7 @@ export default function WalletManager() {
               <form onSubmit={confirmTopUp} className="p-8 pt-4 space-y-5 overflow-y-auto flex-1 custom-scrollbar">
                 {/* Account Name Field */}
                 <div className="space-y-1.5">
-                  <label className="text-slate-400 text-[10px] font-black uppercase tracking-widest block">{language === 'id' ? 'NAMA AKUN / PENGIRIM' : 'SENDER / ACCOUNT NAME'}</label>
+                  <label className="text-slate-400 text-[10px] font-black uppercase tracking-widest block">{t('senderName')}</label>
                   <input 
                     required
                     type="text"
@@ -501,7 +501,7 @@ export default function WalletManager() {
 
                 {/* Amount Field */}
                 <div className="space-y-1.5">
-                  <label className="text-slate-400 text-[10px] font-black uppercase tracking-widest block">{language === 'id' ? 'NOMINAL TOP UP' : 'TOP UP AMOUNT'}</label>
+                  <label className="text-slate-400 text-[10px] font-black uppercase tracking-widest block">{t('topUpAmount')}</label>
                   <div className="relative">
                     <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-black text-xl">Rp</span>
                     <input 
@@ -557,7 +557,7 @@ export default function WalletManager() {
 
                 {/* Payment Number (Phone / Card / Account) */}
                 <div className="space-y-1.5">
-                  <label className="text-slate-400 text-[10px] font-black uppercase tracking-widest block">{language === 'id' ? 'NOMOR PEMBAYARAN (WA/REK/KARTU)' : 'PAYMENT ACCOUNT NUMBER (HP/REC/CARD)'}</label>
+                  <label className="text-slate-400 text-[10px] font-black uppercase tracking-widest block">{t('paymentNumber')}</label>
                   <input 
                     required
                     type="text"
@@ -605,7 +605,7 @@ export default function WalletManager() {
 
                 {/* Optional Notes */}
                 <div className="space-y-1.5">
-                  <label className="text-slate-400 text-[10px] font-black uppercase tracking-widest block">{language === 'id' ? 'CATATAN (OPSIONAL)' : 'OPTIONAL NOTES'}</label>
+                  <label className="text-slate-400 text-[10px] font-black uppercase tracking-widest block">{t('optionalNotes')}</label>
                   <input 
                     type="text"
                     value={notes}
@@ -625,10 +625,10 @@ export default function WalletManager() {
                   {loading ? (
                     <div className="flex items-center justify-center gap-3">
                       <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1 }} className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full" />
-                      {language === 'id' ? 'SYNCING INTEGRITY...' : 'SYNCING INTEGRITY...'}
+                      {t('processing')}
                     </div>
                   ) : (
-                    <>🚀 {translations[language]?.confirmTopUp || 'Confirm Top Up'}</>
+                    <>🚀 {t('confirmTopUp')}</>
                   )}
                 </button>
               </form>
@@ -688,41 +688,41 @@ export default function WalletManager() {
                 </div>
 
                 <div>
-                  <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-3 py-1 rounded-full font-black uppercase tracking-widest">{language === 'id' ? 'TRANSAKSI BERHASIL' : 'TRANSACTION COMPLETED'}</span>
-                  <h4 className="text-white text-2xl font-black tracking-tight mt-3 uppercase tracking-wider">{language === 'id' ? 'SALDO DIPERBARUI!' : 'BALANCE SYNCHRONIZED!'}</h4>
-                  <p className="text-slate-400 text-xs font-semibold mt-1">{language === 'id' ? 'Ledger digital Anda telah ditambah secara realtime' : 'Your cloud node has been updated in realtime'}</p>
+                  <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-3 py-1 rounded-full font-black uppercase tracking-widest">{t('topUpSuccess').toUpperCase()}</span>
+                  <h4 className="text-white text-2xl font-black tracking-tight mt-3 uppercase tracking-wider">{t('balanceSynced')}</h4>
+                  <p className="text-slate-400 text-xs font-semibold mt-1">{t('balanceSyncedDesc')}</p>
                 </div>
 
                 {/* Holographic Balance Sheet */}
                 <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4 text-left space-y-3 font-mono text-[11px] relative">
                   <div className="absolute top-2 right-2 flex items-center gap-1.5 text-slate-500">
                     <Zap size={12} className="text-emerald-400 animate-pulse" />
-                    <span className="text-[8px] font-bold">REALTIME NODE</span>
+                    <span className="text-[8px] font-bold">{t('realtimeNode')}</span>
                   </div>
                   
                   <div className="flex justify-between border-b border-white/5 pb-2 text-xs">
-                    <span className="text-slate-400 font-sans font-bold">NOMINAL DETECTED</span>
+                    <span className="text-slate-400 font-sans font-bold">{t('nominalDetected')}</span>
                     <span className="text-emerald-400 font-extrabold text-sm font-mono">+Rp{lastTopUp.amount.toLocaleString()}</span>
                   </div>
 
                   <div className="flex justify-between">
-                    <span className="text-slate-500 font-sans">ACCOUNT OWNER</span>
+                    <span className="text-slate-500 font-sans">{t('accountOwner')}</span>
                     <span className="text-white font-extrabold uppercase">{lastTopUp.accountName}</span>
                   </div>
 
                   <div className="flex justify-between">
-                    <span className="text-slate-500 font-sans">PAYMENT METHOD</span>
+                    <span className="text-slate-500 font-sans">{t('paymentMethodLabel')}</span>
                     <span className="text-teal-400 font-bold uppercase">{lastTopUp.method}</span>
                   </div>
 
                   <div className="flex justify-between">
-                    <span className="text-slate-500 font-sans">SENDER IDENTIFIER</span>
+                    <span className="text-slate-500 font-sans">{t('senderIdentifier')}</span>
                     <span className="text-slate-300 font-bold">{lastTopUp.paymentNumber}</span>
                   </div>
 
                   {lastTopUp.notes && (
                     <div className="flex justify-between">
-                      <span className="text-slate-500 font-sans">MEMO / NOTE</span>
+                      <span className="text-slate-500 font-sans">{t('memoNote')}</span>
                       <span className="text-slate-400 font-medium italic truncate max-w-[180px]">"{lastTopUp.notes}"</span>
                     </div>
                   )}
@@ -762,7 +762,7 @@ export default function WalletManager() {
                     }}
                     className="py-3 px-3 bg-white/5 hover:bg-white/10 text-white font-black text-[9px] uppercase tracking-wider rounded-xl transition cursor-pointer flex items-center justify-center gap-1.5 border border-white/10"
                   >
-                    <FileSpreadsheet size={14} className="text-emerald-400" /> Save Docket
+                    <FileSpreadsheet size={14} className="text-emerald-400" /> {t('saveDocket')}
                   </button>
 
                   <button 
@@ -772,7 +772,7 @@ export default function WalletManager() {
                     }}
                     className="py-3 px-3 bg-emerald-500 hover:bg-emerald-600 text-white font-black text-[9px] uppercase tracking-wider rounded-xl transition cursor-pointer flex items-center justify-center gap-1 shadow-lg shadow-emerald-500/20"
                   >
-                    Done
+                    {t('done')}
                   </button>
                 </div>
               </div>
